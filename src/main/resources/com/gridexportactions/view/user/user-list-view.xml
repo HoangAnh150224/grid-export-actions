@@ -40,7 +40,7 @@
 
             <button id="uploadTemplateBtn" text="Tải template..."/>
             <button id="exportByTemplateBtn" text="Xuất theo template"  />
-
+            <button id="previewTemplateBtn" text="Xem template"/>
             <button id="jsonExportBtn" action="usersDataGrid.jsonExport"/>
 
             <dropdownButton id="additionalButton" text="msg://additionalMenu" icon="COG">
