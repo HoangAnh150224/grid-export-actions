@@ -9,9 +9,6 @@ import com.vaadin.flow.component.checkbox.CheckboxGroup;
 import com.vaadin.flow.component.dialog.Dialog;
 import com.vaadin.flow.component.grid.Grid;
 import com.vaadin.flow.component.grid.GridSortOrder;
-import com.vaadin.flow.component.html.Div;
-import com.vaadin.flow.component.html.Span;
-import com.vaadin.flow.component.orderedlayout.HorizontalLayout;
 import com.vaadin.flow.component.textfield.TextField;
 import com.vaadin.flow.component.upload.Upload;
 import com.vaadin.flow.component.upload.receivers.MemoryBuffer;
@@ -25,13 +22,9 @@ import io.jmix.flowui.download.Downloader;
 import io.jmix.flowui.model.CollectionContainer;
 import io.jmix.flowui.view.*;
 import io.jmix.gridexportflowui.action.ExcelExportAction;
-import org.apache.poi.hssf.usermodel.HSSFPalette;
-import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.AreaReference;
 import org.apache.poi.ss.util.CellReference;
-import org.apache.poi.xssf.usermodel.XSSFCellStyle;
-import org.apache.poi.xssf.usermodel.XSSFColor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
@@ -202,11 +195,13 @@ public class UserListView extends StandardListView<User> {
 
             // 0) CỘT STT "#": đặt ở đúng cột anchor
             {
+                // ưu tiên style có sẵn tại ô anchor
                 Cell templateSameCell = headerRow.getCell(startCol);
                 CellStyle styleToUse = (hasCustomStyle(templateSameCell))
                         ? templateSameCell.getCellStyle()
                         : null;
 
+                // nếu không có, thử lấy ở ô bên trái anchor (ô mẫu)
                 if (styleToUse == null && startCol > 0) {
                     Cell leftOfAnchor = headerRow.getCell(startCol - 1);
                     if (hasCustomStyle(leftOfAnchor)) {
@@ -225,11 +220,13 @@ public class UserListView extends StandardListView<User> {
             for (int c = 0; c < visibleCols.size(); c++) {
                 int colIndex = startCol + 1 + c; // +1 vì cột 0 là STT
 
+                // ưu tiên style đang có sẵn ở đúng ô
                 Cell templateSameCell = headerRow.getCell(colIndex);
                 CellStyle styleToUse = (hasCustomStyle(templateSameCell))
                         ? templateSameCell.getCellStyle()
                         : null;
 
+                // nếu chưa có, copy style từ cột liền trước (tức là từ cột vừa ghi: có thể là STT hoặc cột trước đó)
                 if (styleToUse == null) {
                     Cell prevCell = headerRow.getCell(colIndex - 1);
                     if (hasCustomStyle(prevCell)) {
@@ -237,6 +234,7 @@ public class UserListView extends StandardListView<User> {
                     }
                 }
 
+                // fallback cuối
                 if (styleToUse == null) {
                     styleToUse = defaultHeaderStyle;
                 }
@@ -285,122 +283,6 @@ public class UserListView extends StandardListView<User> {
             notifications.create("Xuất theo template lỗi: " + ex.getMessage())
                     .withType(Notifications.Type.ERROR).show();
         }
-    }
-
-    // ===== Preview template: hiển thị header + màu ngay trong UI =====
-    @Subscribe("previewTemplateBtn")
-    public void onPreviewTemplateBtnClick(ClickEvent<Button> event) {
-        Resource res = resourceLoader.getResource(usersTemplatePath);
-        if (!res.exists()) {
-            notifications.create("Không tìm thấy template: " + usersTemplatePath)
-                    .withType(Notifications.Type.ERROR).show();
-            return;
-        }
-
-        try (InputStream is = res.getInputStream(); Workbook wb = WorkbookFactory.create(is)) {
-            Anchor anchor = resolveAnchor(wb, usersTemplateAnchorName);
-            if (anchor == null) {
-                notifications.create("Không tìm thấy Named Range: " + usersTemplateAnchorName)
-                        .withType(Notifications.Type.ERROR).show();
-                return;
-            }
-            Sheet sheet = anchor.sheet;
-            int startRow = anchor.row;
-            int startCol = anchor.col;
-
-            // Cột theo đúng thứ tự kéo-thả & đang hiển thị
-            List<Grid.Column<User>> visibleCols = getVisibleColumnsInUiOrder();
-
-            Row headerRow = getOrCreateRow(sheet, startRow);
-            CellStyle defaultHeaderStyle = buildDefaultHeaderStyle(wb);
-
-            Dialog dlg = new Dialog();
-            dlg.setHeaderTitle("Xem trước template (hàng tiêu đề)");
-
-            // Thanh header preview
-            HorizontalLayout headerBar = new HorizontalLayout();
-            headerBar.setPadding(true);
-            headerBar.getStyle().set("border", "1px solid var(--lumo-contrast-20pct)");
-            headerBar.getStyle().set("border-radius", "8px");
-            headerBar.getStyle().set("overflow", "auto");
-
-            // 0) Ô STT "#"
-            {
-                Cell templateSameCell = headerRow.getCell(startCol);
-                CellStyle styleToUse = (hasCustomStyle(templateSameCell)) ? templateSameCell.getCellStyle() : null;
-
-                if (styleToUse == null && startCol > 0) {
-                    Cell leftOfAnchor = headerRow.getCell(startCol - 1);
-                    if (hasCustomStyle(leftOfAnchor)) styleToUse = leftOfAnchor.getCellStyle();
-                }
-                if (styleToUse == null) styleToUse = defaultHeaderStyle;
-
-                String bg = toCssColor(wb, styleToUse);
-                String fg = decideTextColor(bg);
-
-                headerBar.add(buildHeaderCell("#", bg, fg));
-            }
-
-            // 1) Các header còn lại
-            for (int c = 0; c < visibleCols.size(); c++) {
-                int colIndex = startCol + 1 + c;
-
-                Cell templateSameCell = headerRow.getCell(colIndex);
-                CellStyle styleToUse = (hasCustomStyle(templateSameCell))
-                        ? templateSameCell.getCellStyle()
-                        : null;
-
-                if (styleToUse == null) {
-                    Cell prevCell = headerRow.getCell(colIndex - 1);
-                    if (hasCustomStyle(prevCell)) styleToUse = prevCell.getCellStyle();
-                }
-                if (styleToUse == null) styleToUse = defaultHeaderStyle;
-
-                String bg = toCssColor(wb, styleToUse);
-                String fg = decideTextColor(bg);
-
-                headerBar.add(buildHeaderCell(headerTextFromUI(visibleCols.get(c)), bg, fg));
-            }
-
-            Div note = new Div(new Span("Đây là xem trước hàng tiêu đề và màu nền theo template. Khi xuất, dữ liệu sẽ in ngay dưới hàng này (có cột STT ở ngoài cùng bên trái)."));
-            note.getStyle().set("margin-top", "0.5rem").set("font-size", "var(--lumo-font-size-s)");
-
-            dlg.add(headerBar, note);
-
-            Button close = new Button("Đóng", e -> dlg.close());
-            close.getStyle().set("margin-top", "0.75rem");
-            dlg.getFooter().add(close);
-
-            dlg.open();
-
-        } catch (Exception ex) {
-            notifications.create("Xem trước template lỗi: " + ex.getMessage())
-                    .withType(Notifications.Type.ERROR).show();
-        }
-    }
-
-    private Div buildHeaderCell(String text, String bg, String fg) {
-        Div cell = new Div();
-        cell.add(new Span(text));
-        cell.getStyle()
-                .set("padding", "8px 12px")
-                .set("border-right", "1px solid var(--lumo-contrast-20pct)")
-                .set("min-width", "96px")
-                .set("text-align", "center")
-                .set("font-weight", "600");
-        if (bg != null) cell.getStyle().set("background-color", bg);
-        if (fg != null) cell.getStyle().set("color", fg);
-        return cell;
-    }
-
-    private static String decideTextColor(String bgHex) {
-        if (bgHex == null || !bgHex.startsWith("#") || (bgHex.length() != 7)) return "var(--lumo-base-color)";
-        int r = Integer.parseInt(bgHex.substring(1, 3), 16);
-        int g = Integer.parseInt(bgHex.substring(3, 5), 16);
-        int b = Integer.parseInt(bgHex.substring(5, 7), 16);
-        // relative luminance
-        double lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0;
-        return lum < 0.55 ? "#FFFFFF" : "#1F2937"; // sáng/chữ tối
     }
 
     // ===== Upload template =====
@@ -568,43 +450,4 @@ public class UserListView extends StandardListView<User> {
     }
 
     private static String safe(String s) { return s == null ? "" : s; }
-
-    /** Lấy mã màu CSS từ CellStyle Excel (ưu tiên XSSF, fallback HSSF). */
-    private static String toCssColor(Workbook wb, CellStyle st) {
-        if (st == null) return null;
-
-        // XSSF (.xlsx)
-        if (st instanceof XSSFCellStyle xs) {
-            XSSFColor xc = xs.getFillForegroundColorColor();
-            if (xc == null) {
-                // đôi khi màu ở background
-                xc = xs.getFillBackgroundColorColor();
-            }
-            if (xc != null) {
-                byte[] rgb = xc.getRGB();
-                if (rgb != null && rgb.length >= 3) {
-                    return String.format("#%02X%02X%02X", rgb[0] & 0xFF, rgb[1] & 0xFF, rgb[2] & 0xFF);
-                }
-            }
-        }
-
-        // HSSF (.xls)
-        if (wb instanceof HSSFWorkbook hw) {
-            HSSFPalette pal = hw.getCustomPalette();
-            short idx = st.getFillForegroundColor();
-            if (idx == IndexedColors.AUTOMATIC.getIndex()) {
-                idx = st.getFillBackgroundColor();
-            }
-            var color = pal.getColor(idx);
-            if (color != null) {
-                short[] t = color.getTriplet();
-                if (t != null && t.length >= 3) {
-                    return String.format("#%02X%02X%02X", t[0], t[1], t[2]);
-                }
-            }
-        }
-
-        // Fallback: không xác định được màu
-        return null;
-    }
 }
