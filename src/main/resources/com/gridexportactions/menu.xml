@@ -3,6 +3,8 @@
 
     <menu id="application" title="msg://com.gridexportactions/menu.application.title" opened="true">
         <item view="User.list" title="msg://com.gridexportactions.view.user/UserListView.title"/>
+        <item view="MilitaryWarehouse.list"
+              title="msg://com.gridexportactions.view.militarywarehouse/militaryWarehouseListView.title"/>
     </menu>
 
 </menu-config>

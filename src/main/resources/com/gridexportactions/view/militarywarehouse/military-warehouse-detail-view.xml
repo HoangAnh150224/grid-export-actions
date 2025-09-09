@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<view xmlns="http://jmix.io/schema/flowui/view"
+      title="msg://militaryWarehouseDetailView.title"
+      focusComponent="form">
+    <data>
+        <instance id="militaryWarehouseDc"
+                  class="com.gridexportactions.entity.MilitaryWarehouse">
+            <fetchPlan extends="_base"/>
+            <loader id="militaryWarehouseDl"/>
+        </instance>
+    </data>
+    <facets>
+        <dataLoadCoordinator auto="true"/>
+    </facets>
+    <actions>
+        <action id="saveAction" type="detail_saveClose"/>
+        <action id="closeAction" type="detail_close"/>
+    </actions>
+    <layout>
+        <formLayout id="form" dataContainer="militaryWarehouseDc">
+            <responsiveSteps>
+                <responsiveStep minWidth="0" columns="1"/>
+                <responsiveStep minWidth="40em" columns="2"/>
+            </responsiveSteps>
+            <textField id="loaiField" property="loai"/>
+            <textField id="tenField" property="ten"/>
+            <textField id="trangThaiField" property="trangThai"/>
+            <textField id="nhaSanXuatField" property="nhaSanXuat"/>
+            <textField id="soSeriField" property="soSeri"/>
+            <textField id="soLuongField" property="soLuong"/>
+            <datePicker id="ngayTiepNhanField" property="ngayTiepNhan"/>
+            <datePicker id="hanSuDungBaoDuongField" property="hanSuDungBaoDuong"/>
+            <textField id="coNongField" property="coNong"/>
+            <textField id="ghiChuField" property="ghiChu"/>
+        </formLayout>
+        <hbox id="detailActions">
+            <button id="saveAndCloseButton" action="saveAction"/>
+            <button id="closeButton" action="closeAction"/>
+        </hbox>
+    </layout>
+</view>

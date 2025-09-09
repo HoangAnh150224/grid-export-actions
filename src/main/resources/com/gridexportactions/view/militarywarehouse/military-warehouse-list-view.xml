@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<view xmlns="http://jmix.io/schema/flowui/view"
+      xmlns:c="http://jmix.io/schema/flowui/jpql-condition"
+      title="msg://militaryWarehouseListView.title"
+      focusComponent="militaryWarehousesDataGrid">
+
+    <data>
+        <collection id="militaryWarehousesDc"
+                    class="com.gridexportactions.entity.MilitaryWarehouse">
+            <fetchPlan extends="_base"/>
+            <loader id="militaryWarehousesDl" readOnly="true">
+                <query><![CDATA[select e from MilitaryWarehouse e]]></query>
+            </loader>
+        </collection>
+    </data>
+
+    <facets>
+        <dataLoadCoordinator auto="true"/>
+        <urlQueryParameters>
+            <genericFilter component="genericFilter"/>
+            <pagination component="pagination"/>
+        </urlQueryParameters>
+    </facets>
+
+    <actions>
+        <action id="selectAction" type="lookup_select"/>
+        <action id="discardAction" type="lookup_discard"/>
+    </actions>
+
+    <layout>
+        <genericFilter id="genericFilter" dataLoader="militaryWarehousesDl">
+            <properties include=".*"/>
+        </genericFilter>
+
+        <hbox id="buttonsPanel" classNames="buttons-panel">
+            <button id="addButton" action="militaryWarehousesDataGrid.addAction"/>
+            <button id="createButton" action="militaryWarehousesDataGrid.createAction"/>
+            <button id="editButton" action="militaryWarehousesDataGrid.editAction"/>
+
+            <!-- Export mặc định (Grid Export) - cần id=excelExport để @ViewComponent("militaryWarehousesDataGrid.excelExport") hoạt động -->
+            <button id="excelExportButton" action="militaryWarehousesDataGrid.excelExport"/>
+            <button id="jsonExportButton" action="militaryWarehousesDataGrid.jsonExport"/>
+
+            <!-- Nút custom theo Java -->
+            <button id="mergeColumnsBtn" text="Gộp cột"/>
+            <button id="exportByTemplateBtn" text="Xuất theo template"/>
+            <button id="uploadTemplateBtn" text="Tải lên template"/>
+
+            <button id="removeButton" action="militaryWarehousesDataGrid.removeAction"/>
+            <simplePagination id="pagination" dataLoader="militaryWarehousesDl"/>
+        </hbox>
+
+        <dataGrid id="militaryWarehousesDataGrid"
+                  width="100%"
+                  minHeight="20em"
+                  dataContainer="militaryWarehousesDc"
+                  columnReorderingAllowed="true">
+            <actions>
+                <action id="addAction" type="list_add"/>
+                <action id="createAction" type="list_create"/>
+                <action id="editAction" type="list_edit"/>
+
+                <!-- Đổi id action từ excelExportAction -> excelExport để trùng với @ViewComponent -->
+                <action id="excelExport" type="grdexp_excelExport"/>
+                <action id="jsonExport" type="grdexp_jsonExport"/>
+
+                <action id="removeAction" type="list_remove"/>
+            </actions>
+
+            <columns resizable="true">
+                <column property="loai"/>
+                <column property="ten"/>
+                <column property="trangThai"/>
+                <column property="nhaSanXuat"/>
+                <column property="soSeri"/>
+                <column property="soLuong"/>
+                <column property="ngayTiepNhan"/>
+                <column property="hanSuDungBaoDuong"/>
+                <column property="coNong"/>
+                <column property="ghiChu"/>
+            </columns>
+        </dataGrid>
+
+        <hbox id="lookupActions" visible="false">
+            <button id="selectButton" action="selectAction"/>
+            <button id="discardButton" action="discardAction"/>
+        </hbox>
+    </layout>
+</view>

@@ -39,7 +39,7 @@
             <button id="uploadTemplateBtn" text="Tải template..."/>
             <button id="exportByTemplateBtn" text="Xuất theo template"  />
             <button id="jsonExportBtn" action="usersDataGrid.jsonExport"/>
-            <button id="importDataBtn" text="Nhập Excel vào DB"/>
+<!--            <button id="importDataBtn" text="Nhập Excel vào DB"/>-->
 
 
             <dropdownButton id="additionalButton" text="msg://additionalMenu" icon="COG">
