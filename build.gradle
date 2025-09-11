@@ -34,6 +34,10 @@ dependencies {
     implementation 'io.jmix.datatools:jmix-datatools-starter'
     implementation 'io.jmix.datatools:jmix-datatools-flowui-starter'
 
+//
+//    implementation 'io.jmix.reports:jmix-reports-starter'
+//    implementation 'io.jmix.reports:jmix-reports-flowui-starter'
+//
     implementation 'io.jmix.gridexport:jmix-gridexport-flowui-starter'
     implementation 'org.apache.poi:poi-ooxml:5.4.1'
 
