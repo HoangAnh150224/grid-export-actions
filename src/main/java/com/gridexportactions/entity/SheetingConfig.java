@@ -1,5 +1,6 @@
 package com.gridexportactions.entity;
 
+import io.jmix.core.FileRef;
 import io.jmix.core.entity.annotation.JmixGeneratedValue;
 import io.jmix.core.metamodel.annotation.InstanceName;
 import io.jmix.core.metamodel.annotation.JmixEntity;
@@ -25,6 +26,16 @@ public class SheetingConfig {
     @NotNull
     @Column(name = "COLUMNS_JSON", nullable = false)
     private String columnsJson;
+
+    @Column(name = "TEMPLATE_REF", length = 1024)
+    private FileRef templateRef;
+
+    public FileRef getTemplateRef() {
+        return templateRef;
+    }
+    public void setTemplateRef(FileRef templateRef) {
+        this.templateRef = templateRef;
+    }
 
     public UUID getId() { return id; }
     public void setId(UUID id) { this.id = id; }

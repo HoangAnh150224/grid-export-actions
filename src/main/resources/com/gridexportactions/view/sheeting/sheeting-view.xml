@@ -28,13 +28,33 @@
 
     <layout width="100%" height="100%" padding="false" spacing="true" expand="colsTwin">
 
-        <!-- Toolbar chọn bảng -->
+        <!-- Toolbar chọn bảng + hành động -->
         <hbox width="100%" spacing="8px">
-            <h4 text="Chọn bảng"/>
-            <comboBox id="tablesCb" width="420px"/>
-            <label id="tableInfo" width="100%"/>
-            <button id="saveBtn" text="Lưu" themeNames="primary" icon="vaadin:check"/>
-            <button id="cancelBtn" text="Hủy" icon="vaadin:close"/>
+            <hbox>
+                <h4 text="Chọn bảng"/>
+                <comboBox id="tablesCb" width="420px"/>
+                <label id="tableInfo" width="100%"/>
+            </hbox>
+
+            <hbox spacing="8px">
+                <!-- Upload template Excel -->
+                <upload id="templateUpload"
+                        acceptedFileTypes=".xlsx,.xlsm"
+                        maxFileSize="10485760"
+                        width="260px"/>
+
+                <button id="downloadTemplateBtn"
+                        text="Tải template"
+                        icon="vaadin:download"
+                        enabled="false"/>
+
+                <label id="templateInfo" width="240px"/>
+
+                <!-- Nút xuất dữ liệu -->
+                <button id="exportBtn"
+                        text="Xuất"
+                        icon="vaadin:file-table"/>
+            </hbox>
         </hbox>
 
         <!-- TwinColumn thay cho DataGrid -->
@@ -47,5 +67,11 @@
 
         <!-- Hiển thị JSON state: giữ để dùng nội bộ, không cho nhìn -->
         <label id="jsonPreview" visible="false"/>
+        <hbox>
+            <button id="saveBtn" text="Lưu" themeNames="primary" icon="vaadin:check"/>
+            <button id="cancelBtn" text="Hủy" icon="vaadin:close"/>
+
+        </hbox>
+
     </layout>
 </view>
