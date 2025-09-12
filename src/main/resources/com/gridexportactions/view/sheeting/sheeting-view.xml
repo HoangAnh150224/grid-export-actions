@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<view xmlns="http://jmix.io/schema/flowui/view"
+      title="DB Tables">
+
+    <data>
+        <!-- Danh sách bảng -->
+        <keyValueCollection id="tablesDc">
+            <properties>
+                <property name="schema" datatype="string"/>
+                <property name="name" datatype="string"/>
+                <property name="type" datatype="string"/>
+                <property name="remarks" datatype="string"/>
+            </properties>
+        </keyValueCollection>
+
+        <!-- Cột của bảng đang chọn -->
+        <keyValueCollection id="fieldsDc">
+            <properties>
+                <property name="name" datatype="string"/>
+                <property name="dataType" datatype="string"/>
+                <property name="size" datatype="int"/>
+                <property name="nullable" datatype="boolean"/>
+                <property name="default" datatype="string"/>
+                <property name="remarks" datatype="string"/>
+            </properties>
+        </keyValueCollection>
+    </data>
+
+    <layout width="100%" height="100%" padding="false" spacing="true" expand="colsTwin">
+
+        <!-- Toolbar chọn bảng -->
+        <hbox width="100%" spacing="8px">
+            <h4 text="Chọn bảng"/>
+            <comboBox id="tablesCb" width="420px"/>
+            <label id="tableInfo" width="100%"/>
+            <button id="saveBtn" text="Lưu" themeNames="primary" icon="vaadin:check"/>
+            <button id="cancelBtn" text="Hủy" icon="vaadin:close"/>
+        </hbox>
+
+        <!-- TwinColumn thay cho DataGrid -->
+        <twinColumn id="colsTwin"
+                    itemsContainer="fieldsDc"
+                    itemsColumnLabel="Danh sách cột không được in"
+                    selectedItemsColumnLabel="Danh sách cột được in"
+                    width="100%" height="100%"
+                    selectAllButtonsVisible="true"/>
+
+        <!-- Hiển thị JSON state: giữ để dùng nội bộ, không cho nhìn -->
+        <label id="jsonPreview" visible="false"/>
+    </layout>
+</view>

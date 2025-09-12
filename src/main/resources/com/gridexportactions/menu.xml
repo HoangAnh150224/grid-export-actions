@@ -5,6 +5,7 @@
         <item view="User.list" title="msg://com.gridexportactions.view.user/UserListView.title"/>
         <item view="MilitaryWarehouse.list"
               title="msg://com.gridexportactions.view.militarywarehouse/militaryWarehouseListView.title"/>
+        <item view="SheetingView" title="msg://com.gridexportactions.view.sheeting/sheetingView.title"/>
     </menu>
 
 </menu-config>

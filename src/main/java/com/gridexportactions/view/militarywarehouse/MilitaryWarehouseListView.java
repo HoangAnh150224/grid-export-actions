@@ -19,7 +19,14 @@ import io.jmix.flowui.component.grid.DataGrid;
 import io.jmix.flowui.download.DownloadFormat;
 import io.jmix.flowui.download.Downloader;
 import io.jmix.flowui.model.CollectionContainer;
-import io.jmix.flowui.view.*;
+import io.jmix.flowui.view.DialogMode;
+import io.jmix.flowui.view.LookupComponent;
+import io.jmix.flowui.view.StandardListView;
+import io.jmix.flowui.view.Subscribe;
+import io.jmix.flowui.view.ViewComponent;
+import io.jmix.flowui.view.ViewController;
+import io.jmix.flowui.view.ViewDescriptor;
+import io.jmix.flowui.view.View;
 import io.jmix.gridexportflowui.action.ExcelExportAction;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.AreaReference;
@@ -59,15 +66,11 @@ public class MilitaryWarehouseListView extends StandardListView<MilitaryWarehous
     @Value("${app.templates.militaryWarehouse:file:./app-templates/military-warehouse-template.xlsx}")
     private String templatePath;
 
-    // 'in' = ô neo tiêu đề (nếu cần)
-    @Value("${app.templates.militaryWarehouse.anchorName:in}")
-    private String templateAnchorName;
-
-    // 'tableValue' = dải 1 hàng mẫu để bắt đầu ghi DATA
+    // Named range: 1 hàng mẫu (trên sheet) để bắt đầu ghi DATA
     @Value("${app.templates.militaryWarehouse.tableAnchorName:tableValue}")
     private String tableAnchorName;
 
-    // KHAI BÁO SPAN CHO CỘT (bao nhiêu ô sẽ merge nếu phải tạo thêm block)
+    // Kế hoạch span cho từng cột
     private final Map<String, Integer> colSpanPlan = new LinkedHashMap<>() {{
         put("loai", 1);
         put("ten", 2);
@@ -84,9 +87,12 @@ public class MilitaryWarehouseListView extends StandardListView<MilitaryWarehous
     private final Map<String, Function<MilitaryWarehouse, String>> exportValueProviders = new HashMap<>();
     private List<Grid.Column<MilitaryWarehouse>> uiOrderedColumns = new ArrayList<>();
 
+    // Ước lượng số ký tự/ô để auto-span tiêu đề
+    private static final int CHARS_PER_CELL = 8;
+
     // ===== Lifecycle =====
     @Subscribe
-    public void onReady(ReadyEvent e) {
+    public void onInit(View.InitEvent e) {
         uiOrderedColumns = new ArrayList<>(militaryWarehousesDataGrid.getColumns());
         militaryWarehousesDataGrid.addColumnReorderListener(ev -> uiOrderedColumns = ev.getColumns());
     }
@@ -98,13 +104,6 @@ public class MilitaryWarehouseListView extends StandardListView<MilitaryWarehous
                         : uiOrderedColumns;
         return src.stream().filter(Grid.Column::isVisible).collect(Collectors.toList());
     }
-
-    // ===== Named Range helpers =====
-    private static class Anchor {
-        final Sheet sheet; final int row; final int col;
-        Anchor(Sheet s, int r, int c) { sheet = s; row = r; col = c; }
-    }
-
 
     // ====== Helpers đọc layout merge từ NamedRange `tableValue` ======
     private static class TableArea {
@@ -143,6 +142,7 @@ public class MilitaryWarehouseListView extends StandardListView<MilitaryWarehous
         }
         return null;
     }
+
     private static List<Segment> getSegmentsFromTemplateRow(Sheet sh, int row, int fromCol, int toCol) {
         List<Segment> segs = new ArrayList<>();
         int c = fromCol;
@@ -163,6 +163,7 @@ public class MilitaryWarehouseListView extends StandardListView<MilitaryWarehous
         }
         return segs;
     }
+
     private static boolean hasExactMergedRegion(Sheet sh, int row, int from, int to) {
         for (CellRangeAddress r : sh.getMergedRegions()) {
             if (r.getFirstRow() == row && r.getLastRow() == row
@@ -170,27 +171,89 @@ public class MilitaryWarehouseListView extends StandardListView<MilitaryWarehous
         }
         return false;
     }
+
     private static Row getOrCreateRow(Sheet sheet, int rowIdx) {
         Row row = sheet.getRow(rowIdx);
         if (row == null) row = sheet.createRow(rowIdx);
         return row;
     }
 
-    private static void writeIntoSegment(Sheet sh, int rowIdx, int from, int to, String val, CellStyle st) {
-        Row row = getOrCreateRow(sh, rowIdx);
-        for (int c = from; c <= to; c++) {
-            Cell cell = row.getCell(c);
-            if (cell == null) cell = row.createCell(c);
-            if (c == from) cell.setCellValue(val == null ? "" : val);
-            else cell.setBlank();
-            if (st != null) cell.setCellStyle(st);
-        }
-        if (to > from && !hasExactMergedRegion(sh, rowIdx, from, to)) {
-            sh.addMergedRegion(new CellRangeAddress(rowIdx, rowIdx, from, to));
+    private static void clearMergedRegionsInRow(Sheet sh, int rowIdx, int from, int to) {
+        for (int i = sh.getNumMergedRegions() - 1; i >= 0; i--) {
+            CellRangeAddress r = sh.getMergedRegion(i);
+            if (r.getFirstRow() <= rowIdx && r.getLastRow() >= rowIdx) {
+                if (!(r.getLastColumn() < from || r.getFirstColumn() > to)) {
+                    sh.removeMergedRegion(i);
+                }
+            }
         }
     }
 
-    // ===== Gộp cột động trong GRID (UI) – không ảnh hưởng export =====
+    // ---- Helpers cho style/ghi dữ liệu vào segment ----
+
+    // Đọc style của 1 dải ô trên một hàng mẫu, trả về list style theo từng cột
+    private static List<CellStyle> readStylesFromTemplateRow(Sheet sheet, int rowIdx, int fromCol, int toCol) {
+        Row row = getOrCreateRow(sheet, rowIdx);
+        List<CellStyle> styles = new ArrayList<>();
+        for (int c = fromCol; c <= toCol; c++) {
+            Cell cell = row.getCell(c);
+            if (cell == null) {
+                cell = row.createCell(c);
+            }
+            styles.add(cell.getCellStyle());
+        }
+        return styles;
+    }
+
+    // Kéo dài danh sách style theo số lượng segment cần dùng (lặp lại cái cuối)
+    private static List<List<CellStyle>> extendStylesIfNeeded(List<List<CellStyle>> base, int targetSize) {
+        List<List<CellStyle>> out = new ArrayList<>(base);
+        if (out.isEmpty()) return out;
+        while (out.size() < targetSize) {
+            out.add(out.get(out.size() - 1));
+        }
+        return out;
+    }
+
+    // Ghi text và apply style vào một segment, tự merge nếu span > 1
+    private static void writeIntoSegmentUsingStyles(Sheet sheet, int rowIdx, int fromCol, int toCol,
+                                                    String text, List<CellStyle> providedStyles) {
+        Row row = getOrCreateRow(sheet, rowIdx);
+        int width = Math.max(1, toCol - fromCol + 1);
+
+        // Nếu số style ít hơn số cột, lặp lại style cuối
+        List<CellStyle> styles = new ArrayList<>();
+        if (providedStyles == null || providedStyles.isEmpty()) {
+            CellStyle def = sheet.getWorkbook().getCellStyleAt((short) 0);
+            for (int i = 0; i < width; i++) styles.add(def);
+        } else {
+            for (int i = 0; i < width; i++) {
+                styles.add(i < providedStyles.size()
+                        ? providedStyles.get(i)
+                        : providedStyles.get(providedStyles.size() - 1));
+            }
+        }
+
+        // Tạo ô, set style, chỉ cell đầu chứa text
+        for (int offset = 0; offset < width; offset++) {
+            int c = fromCol + offset;
+            Cell cell = row.getCell(c);
+            if (cell == null) cell = row.createCell(c);
+            cell.setCellStyle(styles.get(offset));
+            if (offset == 0) {
+                cell.setCellValue(text == null ? "" : text);
+            } else {
+                cell.setBlank();
+            }
+        }
+
+        // Merge đúng span nếu cần
+        if (width > 1 && !hasExactMergedRegion(sheet, rowIdx, fromCol, toCol)) {
+            sheet.addMergedRegion(new CellRangeAddress(rowIdx, rowIdx, fromCol, toCol));
+        }
+    }
+
+    // ===== UI: Gộp cột động trong GRID (không ảnh hưởng export) =====
     @Subscribe("mergeColumnsBtn")
     public void onMergeColumnsBtnClick(ClickEvent<Button> event) {
         Dialog dlg = new Dialog();
@@ -233,7 +296,7 @@ public class MilitaryWarehouseListView extends StandardListView<MilitaryWarehous
         dlg.open();
     }
 
-    // ===== EXPORT: Data bắt đầu NGAY tại 'tableValue'; thiếu cột thì tự merge thêm =====
+    // ===== EXPORT: In TIÊU ĐỀ (ta.row-1) và DỮ LIỆU (từ ta.row) =====
     @Subscribe("exportByTemplateBtn")
     public void onExportByTemplateBtnClick(ClickEvent<Button> event) {
         Resource res = resourceLoader.getResource(templatePath);
@@ -247,7 +310,7 @@ public class MilitaryWarehouseListView extends StandardListView<MilitaryWarehous
              Workbook wb = WorkbookFactory.create(is);
              ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
 
-            // Đọc hàng mẫu từ NamedRange cấu hình
+            // 1) Lấy hàng mẫu (tableValue)
             TableArea ta = resolveTableArea(wb, tableAnchorName);
             if (ta == null) {
                 notifications.create("Không tìm thấy Named Range: " + tableAnchorName)
@@ -256,24 +319,52 @@ public class MilitaryWarehouseListView extends StandardListView<MilitaryWarehous
             }
             Sheet sheet = ta.sheet;
 
-            // Các block (segment) sẵn có từ hàng template
-            List<Segment> baseSegments = getSegmentsFromTemplateRow(sheet, ta.row, ta.fromCol, ta.toCol);
-            if (baseSegments.isEmpty()) {
+            List<Segment> templateSegments = getSegmentsFromTemplateRow(sheet, ta.row, ta.fromCol, ta.toCol);
+            if (templateSegments.isEmpty()) {
                 notifications.create("Hàng mẫu (" + tableAnchorName + ") không có cột nào.")
                         .withType(Notifications.Type.ERROR).show();
                 return;
             }
 
-            // Style của từng segment trên chính dòng template (tableValue)
-            List<List<CellStyle>> baseSegStyles = new ArrayList<>();
-            for (Segment s : baseSegments) {
-                baseSegStyles.add(readStylesFromTemplateRow(sheet, ta.row, s.from, s.to));
+            // 2) Cột đang hiển thị + cột STT
+            List<Grid.Column<MilitaryWarehouse>> visibleCols = getVisibleColumnsInUiOrder();
+            boolean leadingStt = true;
+
+            // 3) Tiêu đề theo UI
+            List<String> headerTexts = new ArrayList<>();
+            if (leadingStt) headerTexts.add("STT");
+            for (Grid.Column<MilitaryWarehouse> c : visibleCols) headerTexts.add(headerTextFromUI(c));
+
+            // 4) Tính span mục tiêu theo tiêu đề (KHÔNG cộng padding)
+            List<Integer> targetSpans = computeTargetSpans(visibleCols, headerTexts, templateSegments, leadingStt);
+
+            // 5) Dựng segments liên tục từ ta.fromCol
+            List<Segment> allSegments = buildSegmentsFromSpans(ta.fromCol, targetSpans);
+            int lastTo = allSegments.get(allSegments.size() - 1).to;
+
+            // 6) Lấy style: header ở ta.row-1, body ở ta.row; thiếu thì lặp style cuối
+            int headerRow = Math.max(0, ta.row - 1);
+            List<List<CellStyle>> headerBase = new ArrayList<>();
+            List<List<CellStyle>> bodyBase   = new ArrayList<>();
+            for (Segment s : templateSegments) {
+                headerBase.add(readStylesFromTemplateRow(sheet, headerRow, s.from, s.to));
+                bodyBase.add(readStylesFromTemplateRow(sheet, ta.row,    s.from, s.to));
+            }
+            List<List<CellStyle>> headerStyles = extendStylesIfNeeded(headerBase, allSegments.size());
+            List<List<CellStyle>> bodyStyles   = extendStylesIfNeeded(bodyBase,   allSegments.size());
+
+            // 7) Clear merge cũ trên dòng tiêu đề và dòng data mẫu, để merge lại cho khớp
+            clearMergedRegionsInRow(sheet, headerRow, ta.fromCol, lastTo);
+            clearMergedRegionsInRow(sheet, ta.row,    ta.fromCol, lastTo);
+
+            // 8) In TIÊU ĐỀ
+            for (int i = 0; i < allSegments.size(); i++) {
+                Segment seg = allSegments.get(i);
+                String text = (i < headerTexts.size()) ? headerTexts.get(i) : "";
+                writeIntoSegmentUsingStyles(sheet, headerRow, seg.from, seg.to, text, headerStyles.get(i));
             }
 
-            // Cột đang hiển thị trên UI (rất quan trọng!)
-            List<Grid.Column<MilitaryWarehouse>> visibleCols = getVisibleColumnsInUiOrder();
-
-            // Dữ liệu + sort theo Grid
+            // 9) Lấy dữ liệu + sort theo Grid
             List<MilitaryWarehouse> all = dataManager.load(MilitaryWarehouse.class)
                     .query("select e from MilitaryWarehouse e")
                     .fetchPlan("_base")
@@ -281,41 +372,19 @@ public class MilitaryWarehouseListView extends StandardListView<MilitaryWarehous
             Comparator<MilitaryWarehouse> cmp = buildComparatorFromGridSort(militaryWarehousesDataGrid.getSortOrder());
             if (cmp != null) all.sort(cmp);
 
-            // Bắt đầu in NGAY tại dòng tableValue
+            // 10) In PHẦN THÂN
             int rowIdx = ta.row;
             int stt = 1;
-
             for (MilitaryWarehouse mw : all) {
-                // [STT] + các cột UI
                 List<String> values = new ArrayList<>();
-                values.add(String.valueOf(stt));
-                for (Grid.Column<MilitaryWarehouse> col : visibleCols) {
-                    values.add(valueFor(mw, col));
-                }
+                if (leadingStt) values.add(String.valueOf(stt));
+                for (Grid.Column<MilitaryWarehouse> col : visibleCols) values.add(valueFor(mw, col));
 
-                // Nếu template thiếu block thì bổ sung block mới (merge) ở bên phải
-                List<Segment> segsForThisRow = extendSegmentsIfNeeded(
-                        baseSegments, values.size(), ta, visibleCols
-                );
-                // Style cũng nhân theo – block mới dùng style của block cuối trong mẫu
-                List<List<CellStyle>> stylesForThisRow =
-                        extendStylesIfNeeded(baseSegStyles, segsForThisRow.size());
-
-                // Ghi dữ liệu vào từng block
-                int count = Math.min(values.size(), segsForThisRow.size());
-                for (int i = 0; i < count; i++) {
-                    Segment seg = segsForThisRow.get(i);
-                    List<CellStyle> perColStyles = stylesForThisRow.get(i);
-                    writeIntoSegmentUsingStyles(sheet, rowIdx, seg.from, seg.to, values.get(i), perColStyles);
+                for (int i = 0; i < allSegments.size(); i++) {
+                    Segment seg = allSegments.get(i);
+                    String v = (i < values.size()) ? values.get(i) : "";
+                    writeIntoSegmentUsingStyles(sheet, rowIdx, seg.from, seg.to, v, bodyStyles.get(i));
                 }
-                // Nếu còn block thừa → để trống nhưng vẫn clone style/merge
-                for (int i = count; i < segsForThisRow.size(); i++) {
-                    Segment seg = segsForThisRow.get(i);
-                    List<CellStyle> perColStyles = stylesForThisRow.get(i);
-                    writeIntoSegmentUsingStyles(sheet, rowIdx, seg.from, seg.to, "", perColStyles);
-                }
-
-                // Sang dòng kế tiếp
                 stt++;
                 rowIdx++;
             }
@@ -328,45 +397,6 @@ public class MilitaryWarehouseListView extends StandardListView<MilitaryWarehous
                     .withType(Notifications.Type.ERROR).show();
         }
     }
-
-
-    /**
-     * Trả về danh sách segment đúng bằng needCount:
-     * - Nếu template có đủ -> lấy đúng bấy nhiêu từ trái sang phải.
-     * - Nếu thiếu -> tạo thêm segment mới nối tiếp bên phải, span theo colSpanPlan
-     *   (i=0 là STT -> span=1; i>=1 map tới visibleCols.get(i-1)).
-     */
-    private List<Segment> extendSegmentsIfNeeded(List<Segment> base, int needCount,
-                                                 TableArea ta,
-                                                 List<Grid.Column<MilitaryWarehouse>> visibleCols) {
-        List<Segment> out = new ArrayList<>();
-        // 1) Lấy đủ từ template nếu có
-        int take = Math.min(base.size(), needCount);
-        for (int i = 0; i < take; i++) out.add(base.get(i));
-        if (out.size() == needCount) return out;
-
-        // 2) Thiếu -> tạo thêm segment mới ở bên phải
-        int nextCol = out.isEmpty() ? ta.fromCol : (out.get(out.size() - 1).to + 1);
-        for (int i = out.size(); i < needCount; i++) {
-            int span;
-            if (i == 0) {
-                span = 1; // STT
-            } else {
-                int visIdx = i - 1; // map sang visibleCols
-                span = 1;
-                if (visIdx >= 0 && visIdx < visibleCols.size()) {
-                    String key = Objects.toString(visibleCols.get(visIdx).getKey(), "");
-                    span = Math.max(1, colSpanPlan.getOrDefault(key, 1));
-                }
-            }
-            int from = nextCol;
-            int to = nextCol + span - 1;
-            out.add(new Segment(from, to));
-            nextCol = to + 1;
-        }
-        return out;
-    }
-
 
     // ===== Upload template =====
     @Subscribe("uploadTemplateBtn")
@@ -425,69 +455,72 @@ public class MilitaryWarehouseListView extends StandardListView<MilitaryWarehous
         return combined;
     }
 
-    // ===== Styles =====
-    private static CellStyle buildBodyStyle(Workbook wb) {
-        CellStyle st = wb.createCellStyle();
-        st.setWrapText(true);
-        st.setAlignment(HorizontalAlignment.LEFT);
-        st.setVerticalAlignment(VerticalAlignment.TOP);
-        st.setBorderTop(BorderStyle.THIN);
-        st.setTopBorderColor(IndexedColors.GREY_50_PERCENT.getIndex());
-        st.setBorderBottom(BorderStyle.THIN);
-        st.setBottomBorderColor(IndexedColors.GREY_50_PERCENT.getIndex());
-        st.setBorderLeft(BorderStyle.THIN);
-        st.setLeftBorderColor(IndexedColors.GREY_50_PERCENT.getIndex());
-        st.setBorderRight(BorderStyle.THIN);
-        st.setRightBorderColor(IndexedColors.GREY_50_PERCENT.getIndex());
-        return st;
+    // ------- Helper cho export (span, header, style, merge) -------
+    private List<Integer> spansForVisibleCols(List<Grid.Column<MilitaryWarehouse>> visibleCols) {
+        List<Integer> spans = new ArrayList<>();
+        for (Grid.Column<MilitaryWarehouse> c : visibleCols) {
+            String key = Objects.toString(c.getKey(), "");
+            spans.add(Math.max(1, colSpanPlan.getOrDefault(key, 3)));
+        }
+        return spans;
     }
-    // Đọc style theo từng ô của một block ở dòng template (tableValue)
-    private static List<CellStyle> readStylesFromTemplateRow(Sheet sh, int templateRow, int from, int to) {
-        Row row = sh.getRow(templateRow);
-        List<CellStyle> out = new ArrayList<>();
-        for (int c = from; c <= to; c++) {
-            Cell cell = (row != null) ? row.getCell(c) : null;
-            out.add(cell != null ? cell.getCellStyle() : null);
+
+    private List<Integer> computeTargetSpans(List<Grid.Column<MilitaryWarehouse>> visibleCols,
+                                             List<String> headerTexts,
+                                             List<Segment> templateSegments,
+                                             boolean leadingStt) {
+        List<Integer> uiPlanSpans = spansForVisibleCols(visibleCols);
+        List<Integer> out = new ArrayList<>();
+        for (int i = 0; i < headerTexts.size(); i++) {
+            int base = (i < templateSegments.size())
+                    ? (templateSegments.get(i).to - templateSegments.get(i).from + 1)
+                    : 1;
+            int plan = 1;
+            if (!(leadingStt && i == 0)) {
+                int uiIdx = leadingStt ? i - 1 : i;
+                if (uiIdx >= 0 && uiIdx < uiPlanSpans.size())
+                    plan = Math.max(plan, uiPlanSpans.get(uiIdx));
+            }
+            String h = headerTexts.get(i) == null ? "" : headerTexts.get(i);
+            int byText = Math.max(1, (int) Math.ceil(h.length() / (double) CHARS_PER_CELL));
+            int span = Math.max(base, Math.max(plan, byText));
+            // KHÔNG cộng padding 1 ô nữa
+            out.add(Math.max(1, span));
         }
         return out;
     }
 
-    // Nếu cần nhiều block hơn block mẫu => nhân style của block cuối;
-// Nếu template dư block so với dữ liệu => cắt bớt đúng bằng needCount.
-    private static List<List<CellStyle>> extendStylesIfNeeded(List<List<CellStyle>> baseStyles, int needCount) {
-        if (baseStyles.size() >= needCount) {
-            return new ArrayList<>(baseStyles.subList(0, needCount));
+    private List<Segment> buildSegmentsFromSpans(int startCol, List<Integer> spans) {
+        List<Segment> segs = new ArrayList<>();
+        int col = startCol;
+        for (int sp : spans) {
+            int from = col;
+            int to = col + Math.max(1, sp) - 1;
+            segs.add(new Segment(from, to));
+            col = to + 1;
         }
-        List<List<CellStyle>> out = new ArrayList<>(baseStyles);
-        List<CellStyle> last = baseStyles.isEmpty() ? Collections.emptyList() : baseStyles.get(baseStyles.size() - 1);
-        while (out.size() < needCount) out.add(last);
-        return out;
+        return segs;
     }
 
-
-    // Ghi 1 block [from..to] tại rowIdx sử dụng style theo-cột (clone từ template)
-    private static void writeIntoSegmentUsingStyles(Sheet sh, int rowIdx, int from, int to,
-                                                    String val, List<CellStyle> perColStyles) {
-        Row row = getOrCreateRow(sh, rowIdx);
-        int width = to - from + 1;
-        for (int j = 0; j < width; j++) {
-            int col = from + j;
-            Cell cell = row.getCell(col);
-            if (cell == null) cell = row.createCell(col);
-            if (j == 0) cell.setCellValue(val == null ? "" : val);
-            else cell.setBlank();
-
-            CellStyle st = (perColStyles != null && !perColStyles.isEmpty())
-                    ? perColStyles.get(Math.min(j, perColStyles.size() - 1))
-                    : null;
-            if (st != null) cell.setCellStyle(st);
-        }
-        if (to > from && !hasExactMergedRegion(sh, rowIdx, from, to)) {
-            sh.addMergedRegion(new CellRangeAddress(rowIdx, rowIdx, from, to));
-        }
+    private static String headerTextFromUI(Grid.Column<?> col) {
+        try {
+            var m = col.getClass().getMethod("getHeaderText");
+            Object o = m.invoke(col);
+            if (o instanceof String s && !s.isBlank()) return s;
+        } catch (Exception ignored) {}
+        try {
+            var m = col.getClass().getMethod("getHeader");
+            Object comp = m.invoke(col);
+            if (comp instanceof com.vaadin.flow.component.HasText ht) {
+                String s = ht.getText();
+                if (s != null && !s.isBlank()) return s;
+            }
+        } catch (Exception ignored) {}
+        String k = col.getKey();
+        return k == null ? "" : k;
     }
 
-
+    // ===== Value mapping =====
     private String valueFor(MilitaryWarehouse mw, Grid.Column<MilitaryWarehouse> col) {
         String key = col.getKey();
         if (key == null) return "";
