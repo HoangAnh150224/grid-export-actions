@@ -74,7 +74,10 @@ public class SheetingView extends StandardView {
                 currentTableFqn = fqn(sel);
                 tableInfo.setText(quickInfo(sel));
                 loadColumnsForTable(sel);
-                colsTwin.clear();
+                boolean applied = applySavedSelection(); // <-- cố gắng nạp lại
+                if (!applied) {
+                    colsTwin.clear(); // không có cấu hình thì reset rỗng
+                }
                 updateJsonState();
             }
         });
@@ -84,10 +87,48 @@ public class SheetingView extends StandardView {
         reloadTables();
     }
 
+    @SuppressWarnings("unchecked")
+    private boolean applySavedSelection() {
+        if (currentTableFqn == null || currentTableFqn.isBlank()) return false;
+
+        Optional<SheetingConfig> opt = dataManager.load(SheetingConfig.class)
+                .query("select e from SheetingConfig e where e.tableName = :t")
+                .parameter("t", currentTableFqn)
+                .optional();
+
+        if (opt.isEmpty()) return false;
+
+        try {
+            Map<String, Object> json = objectMapper.readValue(opt.get().getColumnsJson(), Map.class);
+            Object cols = json.get("columns");
+            if (!(cols instanceof Collection<?> colList)) return false;
+
+            Set<String> names = colList.stream()
+                    .filter(Objects::nonNull)
+                    .map(Object::toString)
+                    .filter(s -> !s.isBlank())
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+
+            // match theo name trong fieldsDc
+            Collection<KeyValueEntity> all = fieldsDc.getItems();
+            if (all == null || all.isEmpty()) return false;
+
+            LinkedHashSet<KeyValueEntity> selected = all.stream()
+                    .filter(kv -> names.contains(Objects.toString(kv.getValue("name"), "")))
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+
+            colsTwin.setValue(selected);   // set vào TwinColumn
+            return !selected.isEmpty();
+        } catch (Exception ex) {
+            // JSON lỗi thì thôi, coi như chưa có cấu hình hợp lệ
+            return false;
+        }
+    }
+
     /* ===================== NÚT LƯU / HỦY ===================== */
 
     @Subscribe("saveBtn")
-    public void onSaveBtnClick(ClickEvent event) {
+    public void onSaveBtnClick(ClickEvent<Button> event) {
         if (currentTableFqn == null || currentTableFqn.isBlank()) {
             notifications.create("Chưa chọn bảng").withType(Notifications.Type.WARNING).show();
             return;
@@ -98,9 +139,10 @@ public class SheetingView extends StandardView {
 
         // Tìm theo tableName, có thì update, không thì tạo mới
         Optional<SheetingConfig> opt = dataManager.load(SheetingConfig.class)
-                .query("select e from gx_SheetingConfig e where e.tableName = :t")
+                .query("select e from SheetingConfig e where e.tableName = :t")
                 .parameter("t", currentTableFqn)
                 .optional();
+
 
         SheetingConfig cfg = opt.orElseGet(SheetingConfig::new);
         cfg.setTableName(currentTableFqn);
@@ -112,7 +154,7 @@ public class SheetingView extends StandardView {
     }
 
     @Subscribe("cancelBtn")
-    public void onCancelBtnClick(ClickEvent event) {
+    public void onCancelBtnClick(ClickEvent<Button> event) {
         // Hủy thay đổi hiện tại trên UI, không đụng DB
         colsTwin.clear();
         updateJsonState();

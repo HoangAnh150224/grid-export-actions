@@ -3,58 +3,38 @@ package com.gridexportactions.entity;
 import io.jmix.core.entity.annotation.JmixGeneratedValue;
 import io.jmix.core.metamodel.annotation.InstanceName;
 import io.jmix.core.metamodel.annotation.JmixEntity;
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
+import jakarta.persistence.*;
 import jakarta.validation.constraints.NotNull;
-
 import java.util.UUID;
 
-@JmixEntity
+@JmixEntity(name = "SheetingConfig")
+@Entity(name = "SheetingConfig")
 @Table(name = "SHEETING_CONFIG")
-@Entity
 public class SheetingConfig {
+
+    @Id
     @JmixGeneratedValue
     @Column(name = "ID", nullable = false)
-    @Id
     private UUID id;
 
-    @Column(name = "TABLE_NAME", nullable = false)
     @NotNull
+    @Column(name = "TABLE_NAME", nullable = false, length = 255)
     private String tableName;
 
-    @Column(name = "COLUMNS_JSON", nullable = false)
+    @Lob
     @NotNull
+    @Column(name = "COLUMNS_JSON", nullable = false)
     private String columnsJson;
 
-    public String getColumnsJson() {
-        return columnsJson;
-    }
+    public UUID getId() { return id; }
+    public void setId(UUID id) { this.id = id; }
 
-    public void setColumnsJson(String columnsJson) {
-        this.columnsJson = columnsJson;
-    }
+    public String getTableName() { return tableName; }
+    public void setTableName(String tableName) { this.tableName = tableName; }
 
-    public String getTableName() {
-        return tableName;
-    }
-
-    public void setTableName(String tableName) {
-        this.tableName = tableName;
-    }
-
-    public UUID getId() {
-        return id;
-    }
-
-    public void setId(UUID id) {
-        this.id = id;
-    }
+    public String getColumnsJson() { return columnsJson; }
+    public void setColumnsJson(String columnsJson) { this.columnsJson = columnsJson; }
 
     @InstanceName
-    public String getInstanceName() {
-        return tableName;
-    }
-
+    public String getInstanceName() { return tableName; }
 }
