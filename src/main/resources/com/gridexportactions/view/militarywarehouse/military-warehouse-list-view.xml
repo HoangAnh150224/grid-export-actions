@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <view xmlns="http://jmix.io/schema/flowui/view"
-      xmlns:c="http://jmix.io/schema/flowui/jpql-condition"
       title="msg://militaryWarehouseListView.title"
       focusComponent="militaryWarehousesDataGrid">
 
@@ -37,14 +36,18 @@
             <button id="createButton" action="militaryWarehousesDataGrid.createAction"/>
             <button id="editButton" action="militaryWarehousesDataGrid.editAction"/>
 
-            <!-- Export mặc định (Grid Export) - cần id=excelExport để @ViewComponent("militaryWarehousesDataGrid.excelExport") hoạt động -->
-            <button id="excelExportButton" action="militaryWarehousesDataGrid.excelExport"/>
-            <button id="jsonExportButton" action="militaryWarehousesDataGrid.jsonExport"/>
+            <!-- Gộp cột tạm (UI-only, không lưu DB) -->
+            <button id="mergeColumnBtn"
+                    action="militaryWarehousesDataGrid.mergeColumn"
+                    text="Gộp cột (tạm)"
+                    icon="vaadin:columns"/>
 
-            <!-- Nút custom theo Java -->
-            <button id="mergeColumnsBtn" text="Gộp cột"/>
-            <button id="exportByTemplateBtn" text="Xuất theo template"/>
-            <button id="uploadTemplateBtn" text="Tải lên template"/>
+            <!-- CHỈ dùng action xuất Excel chung đã tạo -->
+            <button id="excelExportSheetingBtn"
+                    action="militaryWarehousesDataGrid.excelExportSheeting"
+                    text="Xuất Excel"
+                    icon="vaadin:file-table"
+                    themeNames="primary"/>
 
             <button id="removeButton" action="militaryWarehousesDataGrid.removeAction"/>
             <simplePagination id="pagination" dataLoader="militaryWarehousesDl"/>
@@ -60,9 +63,11 @@
                 <action id="createAction" type="list_create"/>
                 <action id="editAction" type="list_edit"/>
 
-                <!-- Đổi id action từ excelExportAction -> excelExport để trùng với @ViewComponent -->
-                <action id="excelExport" type="grdexp_excelExport"/>
-                <action id="jsonExport" type="grdexp_jsonExport"/>
+                <!-- Gộp cột tạm thời -->
+                <action id="mergeColumn" type="grid_mergeColumn"/>
+
+                <!-- Export Sheeting TÙY CHỈNH (chung) -->
+                <action id="excelExportSheeting" type="sheeting_excelExport"/>
 
                 <action id="removeAction" type="list_remove"/>
             </actions>

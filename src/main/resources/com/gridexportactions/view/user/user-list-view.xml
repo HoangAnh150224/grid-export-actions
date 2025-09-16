@@ -34,13 +34,17 @@
             <button id="editButton" action="usersDataGrid.editAction"/>
             <button id="removeButton" action="usersDataGrid.removeAction"/>
             <button id="showRoleAssignmentsButton" action="usersDataGrid.showRoleAssignmentsAction"/>
-            <button id="mergeColumnsBtn" text="Gộp cột..."/>
+
+            <!-- Gộp cột tạm thời (UI-only, không lưu DB) -->
+            <button id="mergeColumnsBtn"
+                    action="usersDataGrid.mergeColumn"
+                    text="Gộp cột (tạm)"
+                    icon="vaadin:columns"/>
+
             <button id="excelExportBtn" action="usersDataGrid.excelExport"/>
             <button id="uploadTemplateBtn" text="Tải template..."/>
-            <button id="exportByTemplateBtn" text="Xuất theo template"  />
+            <button id="exportByTemplateBtn" text="Xuất theo template"/>
             <button id="jsonExportBtn" action="usersDataGrid.jsonExport"/>
-<!--            <button id="importDataBtn" text="Nhập Excel vào DB"/>-->
-
 
             <dropdownButton id="additionalButton" text="msg://additionalMenu" icon="COG">
                 <items>
@@ -67,6 +71,9 @@
                 <action id="changePasswordAction" type="sec_changePassword"/>
                 <action id="resetPasswordAction" type="sec_resetPassword"/>
                 <action id="showUserSubstitutionsAction" type="sec_showUserSubstitutions"/>
+
+                <!-- Action gộp cột dùng chung (UI-only) -->
+                <action id="mergeColumn" type="grid_mergeColumn"/>
 
                 <action id="excelExport" type="grdexp_excelExport">
                     <properties>

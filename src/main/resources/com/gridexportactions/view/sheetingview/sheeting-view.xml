@@ -28,36 +28,30 @@
 
     <layout width="100%" height="100%" padding="false" spacing="true" expand="colsTwin">
 
-        <!-- Toolbar chọn bảng + hành động -->
-        <hbox width="100%" spacing="8px">
-            <hbox>
-                <h4 text="Chọn bảng"/>
+        <!-- Toolbar chọn bảng + cấu hình template -->
+        <hbox width="100%" spacing="8px" alignItems="CENTER">
+            <hbox spacing="8px" alignItems="CENTER">
+                <label text="Chọn bảng" styleName="h4"/>
                 <comboBox id="tablesCb" width="420px"/>
                 <label id="tableInfo" width="100%"/>
             </hbox>
 
-            <hbox spacing="8px">
+            <hbox spacing="12px" alignItems="END">
                 <!-- Upload template Excel -->
-                <upload id="templateUpload"
-                        acceptedFileTypes=".xlsx,.xlsm"
-                        maxFileSize="10485760"
-                        width="260px"/>
+                <fileStorageUploadField id="templateUpload"
+                                        label="Template Excel"
+                                        width="260px"/>
+                <!-- Sheet name -->
+                <textField id="sheetNameField" label="Sheet name" width="180px"/>
 
-                <button id="downloadTemplateBtn"
-                        text="Tải template"
-                        icon="vaadin:download"
-                        enabled="false"/>
-
-                <label id="templateInfo" width="240px"/>
-
-                <!-- Nút xuất dữ liệu -->
-                <button id="exportBtn"
-                        text="Xuất"
-                        icon="vaadin:file-table"/>
+                <!-- Name Manager anchors -->
+                <textField id="headerAnchorField" label="Header Named Range" width="200px"/>
+                <textField id="dataAnchorField" label="Data Named Range" width="200px"/>
+                <checkbox id="templateHasHeaderCb" label="Template có header" />
             </hbox>
         </hbox>
 
-        <!-- TwinColumn thay cho DataGrid -->
+        <!-- Chọn cột -->
         <twinColumn id="colsTwin"
                     itemsContainer="fieldsDc"
                     itemsColumnLabel="Danh sách cột không được in"
@@ -65,12 +59,12 @@
                     width="100%" height="100%"
                     selectAllButtonsVisible="true"/>
 
-        <!-- Hiển thị JSON state: giữ để dùng nội bộ, không cho nhìn -->
+        <!-- JSON state nội bộ (ẩn) -->
         <label id="jsonPreview" visible="false"/>
-        <hbox>
-            <button id="saveBtn" text="Lưu" themeNames="primary" icon="vaadin:check"/>
-            <button id="cancelBtn" text="Hủy" icon="vaadin:close"/>
 
+        <hbox spacing="8px">
+            <button id="saveBtn" text="Lưu" themeNames="success" icon="vaadin:check"/>
+            <button id="cancelBtn" text="Hủy" icon="vaadin:close"/>
         </hbox>
 
     </layout>
