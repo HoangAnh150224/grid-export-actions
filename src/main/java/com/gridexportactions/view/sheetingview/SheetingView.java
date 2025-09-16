@@ -25,6 +25,10 @@ import org.springframework.beans.factory.annotation.Qualifier;
 
 import javax.sql.DataSource;
 import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.sql.*;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -56,27 +60,38 @@ public class SheetingView extends StandardView {
     @ViewComponent private TextField sheetNameField;
 
     private String currentTableFqn;
-    private FileRef templateFileRef; // file user vừa upload hoặc file đã lưu trước đó
+    private String templateUploadedName;  // chỉ giữ tên file trong ./app-templates
     private String currentSelectionJson = "";
 
     @Subscribe
     public void onInit(InitEvent event) {
         jsonPreview.setVisible(false);
 
-        // placeholders & defaults
         if (headerAnchorField != null) headerAnchorField.setPlaceholder("HEADER_START");
         if (dataAnchorField != null)   dataAnchorField.setPlaceholder("DATA_START");
         if (templateHasHeaderCb != null) templateHasHeaderCb.setValue(Boolean.TRUE);
         if (sheetNameField != null) sheetNameField.setValue("Export");
 
-        // lắng nghe upload
+        // Upload -> copy file vào ./app-templates và lưu lại tên
         if (templateUpload != null) {
             templateUpload.addFileUploadSucceededListener(e -> {
-                templateFileRef = templateUpload.getValue();
-                updateJsonState();
+                FileRef ref = templateUpload.getValue();
+                if (ref == null) return;
+                if (isBlank(currentTableFqn)) { warn("Chưa chọn bảng"); return; }
+                try (InputStream is = fileStorage.openStream(ref)) {
+                    String fileName = ref.getFileName(); // giữ nguyên tên người dùng
+                    Path dir = Paths.get("./app-templates");
+                    Files.createDirectories(dir);
+                    Files.copy(is, dir.resolve(fileName), StandardCopyOption.REPLACE_EXISTING);
+                    templateUploadedName = fileName;
+                    info("Đã lưu template vào app-templates: " + fileName);
+                    updateJsonState();
+                } catch (Exception ex) {
+                    error("Lưu template thất bại: " + ex.getMessage());
+                }
             });
             templateUpload.addValueChangeListener(e -> {
-                if (e.getValue() == null) templateFileRef = null;
+                if (e.getValue() == null) templateUploadedName = null;
                 updateJsonState();
             });
         }
@@ -102,7 +117,7 @@ public class SheetingView extends StandardView {
         if (colsTwin.getValue() == null || colsTwin.getValue().isEmpty()) {
             warn("Chưa chọn cột để lưu cấu hình"); return;
         }
-        // Build JSON payload đúng schema mà SheetingConfigService.parseSpec dùng
+
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("table", currentTableFqn);
         payload.put("columns", selectedColumns());
@@ -110,16 +125,7 @@ public class SheetingView extends StandardView {
         payload.put("headerAnchor", trimOrNull(headerAnchorField != null ? headerAnchorField.getValue() : null));
         payload.put("dataAnchor",   trimOrNull(dataAnchorField   != null ? dataAnchorField.getValue()   : null));
         payload.put("templateHasHeader", templateHasHeaderCb != null && Boolean.TRUE.equals(templateHasHeaderCb.getValue()));
-
-        if (templateFileRef != null) {
-            payload.put("templateStorage", templateFileRef.getStorageName());
-            payload.put("templateFileId",  templateFileRef.getPath());      // path ~ id
-            payload.put("templateFileName", templateFileRef.getFileName());
-        } else {
-            payload.put("templateStorage", null);
-            payload.put("templateFileId",  null);
-            payload.put("templateFileName", null);
-        }
+        payload.put("templateUploaded", templateUploadedName); // <== chỉ 1 field
 
         String json;
         try {
@@ -149,12 +155,10 @@ public class SheetingView extends StandardView {
     @Subscribe("cancelBtn")
     public void onCancelBtnClick(ClickEvent<Button> event) {
         colsTwin.clear();
-        if (templateUpload != null) {
-            templateUpload.clear();
-            templateFileRef = null;
-        }
-        headerAnchorField.clear();
-        dataAnchorField.clear();
+        if (templateUpload != null) templateUpload.clear();
+        templateUploadedName = null;
+        if (headerAnchorField != null) headerAnchorField.clear();
+        if (dataAnchorField != null) dataAnchorField.clear();
         if (templateHasHeaderCb != null) templateHasHeaderCb.setValue(Boolean.TRUE);
         if (sheetNameField != null) sheetNameField.setValue("Export");
         updateJsonState();
@@ -174,7 +178,7 @@ public class SheetingView extends StandardView {
         tableInfo.setText("");
         fieldsDc.setItems(Collections.emptyList());
         colsTwin.clear();
-        templateFileRef = null;
+        templateUploadedName = null;
         updateJsonState();
     }
 
@@ -184,7 +188,7 @@ public class SheetingView extends StandardView {
             tableInfo.setText("");
             fieldsDc.setItems(Collections.emptyList());
             colsTwin.clear();
-            templateFileRef = null;
+            templateUploadedName = null;
             updateJsonState();
             return;
         }
@@ -282,50 +286,31 @@ public class SheetingView extends StandardView {
                             }
                         }
 
-                        // sheet name
+                        // sheet & anchors
                         if (sheetNameField != null) {
                             String sheet = Objects.toString(json.getOrDefault("sheetName", "Export"), "Export");
                             sheetNameField.setValue(sheet);
                         }
-
-                        // anchors
                         if (headerAnchorField != null) headerAnchorField.setValue(nvl(json.get("headerAnchor")));
                         if (dataAnchorField != null)   dataAnchorField.setValue(nvl(json.get("dataAnchor")));
                         if (templateHasHeaderCb != null && json.containsKey("templateHasHeader")) {
                             templateHasHeaderCb.setValue(Boolean.parseBoolean(nvl(json.get("templateHasHeader"), "true")));
                         }
 
-                        // template (FileRef)
-                        String storage = trimOrNull(objToStr(json.get("templateStorage")));
-                        String path    = trimOrNull(objToStr(json.get("templateFileId")));   // path ~ id
-                        String name    = trimOrNull(objToStr(json.get("templateFileName")));
-                        if (storage != null && path != null && name != null) {
-                            templateFileRef = new FileRef(storage, path, name);
-                            // Hiển thị lại tên file (UploadField hỗ trợ setValue(FileRef))
-                            if (templateUpload != null) templateUpload.setValue(templateFileRef);
-                            // Validate stream khả dụng (optional)
-                            try (InputStream is = fileStorage.openStream(templateFileRef)) {
-                                // no-op
-                            } catch (Exception ex) {
-                                // nếu file không còn trong storage -> clear
-                                templateFileRef = null;
-                                if (templateUpload != null) templateUpload.clear();
-                            }
-                        } else {
-                            templateFileRef = null;
-                            if (templateUpload != null) templateUpload.clear();
-                        }
+                        // template file name
+                        templateUploadedName = trimOrNull(objToStr(json.get("templateUploaded")));
+                        // (UploadField không set lại được tên file đã copy sang local — OK)
 
                         currentSelectionJson = cfg.getColumnsJson();
                         jsonPreview.setText(currentSelectionJson);
                     } catch (Exception ignore) {
                         colsTwin.clear();
-                        templateFileRef = null;
+                        templateUploadedName = null;
                         if (templateUpload != null) templateUpload.clear();
                     }
                 }, () -> {
                     colsTwin.clear();
-                    templateFileRef = null;
+                    templateUploadedName = null;
                     if (templateUpload != null) templateUpload.clear();
                 });
     }
@@ -339,15 +324,7 @@ public class SheetingView extends StandardView {
             payload.put("headerAnchor", headerAnchorField != null ? trimOrNull(headerAnchorField.getValue()) : null);
             payload.put("dataAnchor",   dataAnchorField != null ? trimOrNull(dataAnchorField.getValue())   : null);
             payload.put("templateHasHeader", templateHasHeaderCb != null && Boolean.TRUE.equals(templateHasHeaderCb.getValue()));
-            if (templateFileRef != null) {
-                payload.put("templateStorage", templateFileRef.getStorageName());
-                payload.put("templateFileId",  templateFileRef.getPath());
-                payload.put("templateFileName", templateFileRef.getFileName());
-            } else {
-                payload.put("templateStorage", null);
-                payload.put("templateFileId",  null);
-                payload.put("templateFileName", null);
-            }
+            payload.put("templateUploaded", templateUploadedName);
 
             String json = objectMapper.writeValueAsString(payload);
             this.currentSelectionJson = json;
@@ -382,10 +359,6 @@ public class SheetingView extends StandardView {
         return s.startsWith("pg_") || s.equals("information_schema") || s.equals("mysql")
                 || s.equals("performance_schema") || s.equals("sys") || s.equals("system")
                 || (s.startsWith("sys") && s.length() > 3);
-    }
-    private static String[] splitSchemaAndTable(String fqn) {
-        int p = fqn.indexOf('.');
-        return p > 0 ? new String[]{fqn.substring(0, p), fqn.substring(p + 1)} : new String[]{null, fqn};
     }
     private static String nvl(Object o) { return nvl(o, ""); }
     private static String nvl(Object o, String def) { return o == null ? def : o.toString(); }

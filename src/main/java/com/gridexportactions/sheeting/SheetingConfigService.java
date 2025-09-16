@@ -57,7 +57,7 @@ public class SheetingConfigService {
                 .toList();
         if (candidates.isEmpty()) return Optional.empty();
 
-        // Tránh lỗi JPQL parser với IN(lower(...)). Xây where dạng OR.
+        // Tránh lỗi parser với IN(lower(...)): build OR thủ công
         String where = IntStream.range(0, candidates.size())
                 .mapToObj(i -> "lower(e.tableName) = :c" + i)
                 .collect(Collectors.joining(" or "));
@@ -126,7 +126,7 @@ public class SheetingConfigService {
         };
     }
 
-    // Bản rút gọn giữ tương thích chỗ cũ
+    // Tương thích chỗ cũ
     public java.util.function.Predicate<DataGrid.Column<Object>> buildColumnFilter(
             DataGrid<?> grid, List<String> propertyOrder) {
         return buildColumnFilter(grid, propertyOrder, false);
@@ -144,7 +144,7 @@ public class SheetingConfigService {
             boolean exists = grid.getAllColumns().stream().anyMatch(c -> key.equals(c.getKey()));
             if (exists) continue;
 
-            // Chuẩn bị danh sách property path tương ứng concatOf
+            // property paths cho concatOf
             List<String> propPaths = new ArrayList<>();
             for (String db : vc.concatOf) {
                 String pp = dbToProperty.get(safeLower(db));
@@ -152,7 +152,7 @@ public class SheetingConfigService {
             }
             if (propPaths.isEmpty()) continue;
 
-            // ValueProvider đọc entity theo property path rồi ghép chuỗi
+            // provider => đọc entity theo path & join
             Function<Object, String> provider = entity -> {
                 List<String> parts = new ArrayList<>();
                 Object cur = entity;
@@ -172,7 +172,7 @@ public class SheetingConfigService {
         }
     }
 
-    /* ===================== JSON / SPEC ===================== */
+    /* ===================== SPEC / JSON ===================== */
 
     private Optional<Spec> parseSpec(String json, String table) {
         try {
@@ -186,16 +186,15 @@ public class SheetingConfigService {
             s.columns = toStringList(map.get("columns"));
             s.sheetName = Objects.toString(map.getOrDefault("sheetName", "Export"), "Export");
 
-            // Anchors + template flags
+            // anchors + template file name
             s.headerAnchor = objToStr(map.get("headerAnchor"));
             s.dataAnchor = objToStr(map.get("dataAnchor"));
-            s.templateHasHeader = Boolean.parseBoolean(Objects.toString(map.getOrDefault("templateHasHeader", "false")));
+            s.templateHasHeader = Boolean.parseBoolean(
+                    Objects.toString(map.getOrDefault("templateHasHeader", "true"))
+            );
+            s.templateUploaded = objToStr(map.get("templateUploaded")); // <== chỉ 1 field
 
-            // Template FileRef fields
-            s.templateStorage = objToStr(map.get("templateStorage"));
-            s.templateFileId = objToStr(map.get("templateFileId"));
-            s.templateFileName = objToStr(map.get("templateFileName"));
-
+            // virtual columns
             Object vcols = map.get("virtualColumns");
             if (vcols instanceof Collection<?> col) {
                 for (Object o : col) {
@@ -216,6 +215,37 @@ public class SheetingConfigService {
             return Optional.of(s);
         } catch (Exception e) {
             return Optional.empty();
+        }
+    }
+
+    /** (Optional) serialize Spec lại JSON nếu bạn cần ghi DB từ service này */
+    private String specToJson(Spec s) {
+        try {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("columns", s.columns == null ? List.of() : s.columns);
+            out.put("sheetName", s.sheetName == null ? "Export" : s.sheetName);
+            out.put("headerAnchor", s.headerAnchor);
+            out.put("dataAnchor", s.dataAnchor);
+            out.put("templateHasHeader", s.templateHasHeader);
+            out.put("templateUploaded", s.templateUploaded); // <== chỉ 1 field
+
+            List<Map<String, Object>> vlist = new ArrayList<>();
+            if (s.virtualColumns != null) {
+                for (VirtualColumn vc : s.virtualColumns) {
+                    if (vc == null) continue;
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("key", vc.key);
+                    m.put("header", vc.header);
+                    m.put("concatOf", vc.concatOf == null ? List.of() : vc.concatOf);
+                    m.put("delimiter", vc.delimiter == null ? " " : vc.delimiter);
+                    vlist.add(m);
+                }
+            }
+            out.put("virtualColumns", vlist);
+
+            return objectMapper.writeValueAsString(out);
+        } catch (Exception e) {
+            return "{\"columns\":[],\"virtualColumns\":[]}";
         }
     }
 
@@ -339,23 +369,17 @@ public class SheetingConfigService {
         public List<String> columns = List.of();
         public String sheetName = "Export";
 
-        // Template + anchors
+        // Template + anchors (tên file nằm ở ./app-templates)
         public String headerAnchor;
         public String dataAnchor;
-        public boolean templateHasHeader;
-
-        // FileRef của template trong FileStorage
-        public String templateStorage;
-        public String templateFileId;
-        public String templateFileName;
+        public boolean templateHasHeader = true;
+        public String templateUploaded;       // <== duy nhất
 
         public List<VirtualColumn> virtualColumns = new ArrayList<>();
         public Spec withResolvedTable(String t){ this.table=t; return this; }
 
-        public boolean hasTemplateRef() {
-            return templateStorage != null && !templateStorage.isBlank()
-                    && templateFileId != null && !templateFileId.isBlank()
-                    && templateFileName != null && !templateFileName.isBlank();
+        public boolean hasTemplate() {
+            return templateUploaded != null && !templateUploaded.isBlank();
         }
     }
 
@@ -366,45 +390,7 @@ public class SheetingConfigService {
         public String delimiter = " ";
     }
 
-    /* ===================== JSON WRITE ===================== */
-
-    /** Ghi Spec về JSON để lưu DB, GIỮ các trường template/anchor. */
-    private String specToJson(Spec s) {
-        try {
-            Map<String, Object> out = new LinkedHashMap<>();
-            out.put("columns", s.columns == null ? List.of() : s.columns);
-            out.put("sheetName", s.sheetName == null ? "Export" : s.sheetName);
-
-            // Anchors + template
-            out.put("headerAnchor", s.headerAnchor);
-            out.put("dataAnchor", s.dataAnchor);
-            out.put("templateHasHeader", s.templateHasHeader);
-            out.put("templateStorage", s.templateStorage);
-            out.put("templateFileId", s.templateFileId);
-            out.put("templateFileName", s.templateFileName);
-
-            List<Map<String, Object>> vlist = new ArrayList<>();
-            if (s.virtualColumns != null) {
-                for (VirtualColumn vc : s.virtualColumns) {
-                    if (vc == null) continue;
-                    Map<String, Object> m = new LinkedHashMap<>();
-                    m.put("key", vc.key);
-                    m.put("header", vc.header);
-                    m.put("concatOf", vc.concatOf == null ? List.of() : vc.concatOf);
-                    m.put("delimiter", vc.delimiter == null ? " " : vc.delimiter);
-                    vlist.add(m);
-                }
-            }
-            out.put("virtualColumns", vlist);
-
-            return objectMapper.writeValueAsString(out);
-        } catch (Exception e) {
-            return "{\"columns\":[],\"virtualColumns\":[]}";
-        }
-    }
-
     /* ===================== misc helpers ===================== */
-
     private static String objToStr(Object o) {
         if (o == null) return null;
         String s = o.toString().trim();
