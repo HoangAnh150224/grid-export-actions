@@ -22,6 +22,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Scope;
 import org.springframework.stereotype.Component;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -39,7 +40,6 @@ public class SheetingExcelExportAction extends ListDataComponentAction<SheetingE
     @Autowired private Downloader downloader;
     @Autowired private AutowireCapableBeanFactory beanFactory;
 
-    // Thư mục chứa template (đặt qua application.properties nếu muốn)
     @Value("${app.templates.dir:./app-templates}")
     private String templatesDir;
 
@@ -56,7 +56,6 @@ public class SheetingExcelExportAction extends ListDataComponentAction<SheetingE
         @SuppressWarnings("unchecked")
         DataGrid<Object> grid = (DataGrid<Object>) target;
 
-        // default: filter theo cột đang hiển thị (khi fallback)
         Predicate<DataGrid.Column<Object>> defaultFilter = DataGrid.Column::isVisible;
 
         try {
@@ -64,13 +63,13 @@ public class SheetingExcelExportAction extends ListDataComponentAction<SheetingE
             if (cfgOpt.isPresent()) {
                 var spec = cfgOpt.get();
 
-                // áp virtual columns (để người dùng vẫn thấy trong UI nếu có)
+                // Virtual columns (nếu có)
                 configService.applyVirtualColumns(grid, spec);
 
-                // lấy order từ cấu hình (đã map từ DB column -> property path)
+                // Order theo config (DB col -> property path)
                 List<String> propertyOrder = configService.resolvePropertyOrder(grid, spec.columns);
 
-                // Nếu có template + anchors => xuất POI theo template, KHÔNG auto-size
+                // Nếu có template + (ít nhất một) anchor -> xuất theo POI
                 byte[] template = tryLoadTemplateBytes(spec);
                 boolean hasAnchors = notBlank(spec.dataAnchor) || notBlank(spec.headerAnchor);
                 if (template != null && hasAnchors) {
@@ -78,7 +77,7 @@ public class SheetingExcelExportAction extends ListDataComponentAction<SheetingE
                     return;
                 }
 
-                // Không có template ⇒ fallback exporter mặc định (giữ nguyên hành vi cũ)
+                // Fallback: exporter mặc định
                 OffsetExcelExporter exporter = beanFactory.createBean(OffsetExcelExporter.class);
                 if (!propertyOrder.isEmpty()) {
                     exporter.withPropertyOrder(propertyOrder);
@@ -88,12 +87,12 @@ public class SheetingExcelExportAction extends ListDataComponentAction<SheetingE
                 return;
             }
 
-            // Không có cấu hình ⇒ cứ export như mặc định
+            // Không có cấu hình
             beanFactory.createBean(OffsetExcelExporter.class)
                     .exportDataGrid(downloader, grid, ExportMode.ALL_ROWS, defaultFilter);
 
         } catch (Exception ex) {
-            // fallback cuối cùng cho an toàn
+            // Fallback cuối
             beanFactory.createBean(OffsetExcelExporter.class)
                     .exportDataGrid(downloader, grid, ExportMode.ALL_ROWS, defaultFilter);
         }
@@ -106,29 +105,30 @@ public class SheetingExcelExportAction extends ListDataComponentAction<SheetingE
                                       List<String> propertyOrder,
                                       byte[] template) throws Exception {
 
-        // Nếu chưa có order thì lấy theo các cột đang hiển thị (mpp.toPathString)
         if (propertyOrder == null || propertyOrder.isEmpty()) {
             propertyOrder = visibleMetaPropertyPaths(grid);
         }
-
-        // Lấy toàn bộ items từ container
         List<Object> items = collectEntities(grid);
 
-        try (Workbook wb = WorkbookFactory.create(new java.io.ByteArrayInputStream(template));
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(template));
              ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
 
-            // Tìm data anchor
+            // Anchor dữ liệu (case-insensitive, cho phép NamedRange là một vùng -> lấy ô đầu)
             Anchor dataAnchor = resolveAnchor(wb, orElse(spec.dataAnchor, "DATA_START"));
             if (dataAnchor == null) {
                 throw new IllegalStateException("Không tìm thấy Named Range cho data: " + spec.dataAnchor);
             }
 
-            // Đọc các SEGMENT (block cột) trên hàng anchor, dựa theo merge hiện có
+            // Tính toCol: lấy max giữa lastCellNum của hàng và các merge trên chính hàng đó
+            int lastCol = lastColumnIndexOnRow(dataAnchor.sheet, dataAnchor.row);
+            if (lastCol < dataAnchor.col) lastCol = dataAnchor.col;
+
+            // Đọc các SEGMENT trên hàng template, BẮT ĐẦU TỪ CỘT ANCHOR
             List<Segment> segments = getSegmentsFromTemplateRow(
-                    dataAnchor.sheet, dataAnchor.row, 0, Math.max(0, dataAnchor.sheet.getRow(dataAnchor.row).getLastCellNum() - 1)
+                    dataAnchor.sheet, dataAnchor.row, dataAnchor.col, lastCol
             );
             if (segments.isEmpty()) {
-                // nếu không tìm thấy merge, tạo segment tuần tự, số lượng tối thiểu bằng số cột cần in
+                // Không có merge thì dựng segment 1-1 theo số cột cần in
                 segments = new ArrayList<>();
                 int col = dataAnchor.col;
                 for (int i = 0; i < propertyOrder.size(); i++) {
@@ -137,37 +137,32 @@ public class SheetingExcelExportAction extends ListDataComponentAction<SheetingE
                 }
             }
 
-            // style tham chiếu từ ô đầu tiên của row anchor (nếu có)
-            CellStyle templateStyle = styleAt(dataAnchor.sheet, dataAnchor.row, dataAnchor.col);
-
-            // Ghi lần lượt từng dòng
-            int rowIdx = dataAnchor.row; // bắt đầu ngay tại hàng anchor
+            // Ghi dữ liệu: với MỖI segment, lấy style ngay tại (row anchor, fromCol) rồi apply cho dòng mới
+            int rowIdx = dataAnchor.row; // ghi ngay tại hàng anchor
             for (Object entity : items) {
-                // lấy giá trị theo propertyOrder
                 List<String> values = new ArrayList<>(propertyOrder.size());
                 for (String path : propertyOrder) {
                     Object v = safeGet(entity, path);
                     values.add(formatVal(v));
                 }
 
-                // ghi theo segment (không auto-size)
                 int count = Math.min(values.size(), segments.size());
                 for (int i = 0; i < count; i++) {
                     Segment seg = segments.get(i);
-                    writeIntoSegment(dataAnchor.sheet, rowIdx, seg.from, seg.to, values.get(i), templateStyle);
+                    CellStyle segStyle = styleAt(dataAnchor.sheet, dataAnchor.row, seg.from);
+                    writeIntoSegment(dataAnchor.sheet, rowIdx, seg.from, seg.to, values.get(i), segStyle);
                 }
-                // nếu thừa segment so với value => để trống
+                // Nếu còn segment dư thì fill rỗng
                 for (int i = count; i < segments.size(); i++) {
                     Segment seg = segments.get(i);
-                    writeIntoSegment(dataAnchor.sheet, rowIdx, seg.from, seg.to, "", templateStyle);
+                    CellStyle segStyle = styleAt(dataAnchor.sheet, dataAnchor.row, seg.from);
+                    writeIntoSegment(dataAnchor.sheet, rowIdx, seg.from, seg.to, "", segStyle);
                 }
-
                 rowIdx++;
             }
 
             wb.write(bos);
-            String outName = buildOutName(spec);
-            downloader.download(bos.toByteArray(), outName, DownloadFormat.XLSX);
+            downloader.download(bos.toByteArray(), buildOutName(spec), DownloadFormat.XLSX);
         }
     }
 
@@ -185,7 +180,7 @@ public class SheetingExcelExportAction extends ListDataComponentAction<SheetingE
         var edg = (EnhancedDataGrid) grid;
         return grid.getAllColumns().stream()
                 .filter(DataGrid.Column::isVisible)
-                .map(c -> edg.getColumnMetaPropertyPath(c))
+                .map(edg::getColumnMetaPropertyPath)
                 .filter(Objects::nonNull)
                 .map(mpp -> mpp.toPathString())
                 .collect(Collectors.toList());
@@ -215,23 +210,35 @@ public class SheetingExcelExportAction extends ListDataComponentAction<SheetingE
         Anchor(Sheet s, int r, int c) { sheet = s; row = r; col = c; }
     }
 
+    /** Tìm NamedRange theo tên (case-insensitive). Nếu NamedRange là một vùng, lấy ô đầu (top-left). */
     private static Anchor resolveAnchor(Workbook wb, String named) {
         if (named == null || named.isBlank()) return null;
-        Name n = null;
-        try { n = wb.getName(named); } catch (UnsupportedOperationException ignore) {}
-        if (n == null || n.getRefersToFormula() == null) return null;
 
-        AreaReference ar = new AreaReference(n.getRefersToFormula(), wb.getSpreadsheetVersion());
+        Name found = null;
+        try { found = wb.getName(named); } catch (UnsupportedOperationException ignore) {}
+        if (found == null) {
+            // Tìm case-insensitive
+            try {
+                for (Name n : wb.getAllNames()) {
+                    if (named.equalsIgnoreCase(n.getNameName())) { found = n; break; }
+                }
+            } catch (UnsupportedOperationException ignore) {}
+        }
+        if (found == null || found.getRefersToFormula() == null) return null;
+
+        AreaReference ar = new AreaReference(found.getRefersToFormula(), wb.getSpreadsheetVersion());
         CellReference first = ar.getFirstCell();
 
-        Sheet sheet = first.getSheetName() != null ? wb.getSheet(first.getSheetName())
-                : (n.getSheetIndex() >= 0 ? wb.getSheetAt(n.getSheetIndex()) : wb.getSheetAt(0));
+        Sheet sheet = first.getSheetName() != null
+                ? wb.getSheet(first.getSheetName())
+                : (found.getSheetIndex() >= 0 ? wb.getSheetAt(found.getSheetIndex()) : wb.getSheetAt(0));
 
         return new Anchor(sheet, first.getRow(), first.getCol());
     }
 
     private static class Segment { final int from, to; Segment(int f, int t){from=f;to=t;} }
 
+    /** Trả về danh sách segment theo merge trên hàng `row`, quét từ `fromCol` → `toCol`. */
     private static List<Segment> getSegmentsFromTemplateRow(Sheet sh, int row, int fromCol, int toCol) {
         List<Segment> segs = new ArrayList<>();
         if (toCol < fromCol) return segs;
@@ -253,6 +260,18 @@ public class SheetingExcelExportAction extends ListDataComponentAction<SheetingE
             c++;
         }
         return segs;
+    }
+
+    private static int lastColumnIndexOnRow(Sheet sh, int row) {
+        int last = -1;
+        Row r = sh.getRow(row);
+        if (r != null) last = Math.max(last, r.getLastCellNum() - 1);
+        for (CellRangeAddress m : sh.getMergedRegions()) {
+            if (m.getFirstRow() <= row && row <= m.getLastRow()) {
+                last = Math.max(last, m.getLastColumn());
+            }
+        }
+        return Math.max(last, 0);
     }
 
     private static CellRangeAddress findMergedRegionStartingAt(Sheet sh, int row, int col) {
@@ -277,7 +296,6 @@ public class SheetingExcelExportAction extends ListDataComponentAction<SheetingE
             else cell.setBlank();
             if (style != null) cell.setCellStyle(style);
         }
-        // nếu segment rộng >1 thì merge cho HÀNG DATA (template đã merge sẵn hàng mẫu)
         if (to > from && !hasExactMergedRegion(sh, rowIdx, from, to)) {
             sh.addMergedRegion(new CellRangeAddress(rowIdx, rowIdx, from, to));
         }
@@ -312,7 +330,6 @@ public class SheetingExcelExportAction extends ListDataComponentAction<SheetingE
 
     private byte[] tryLoadTemplateBytes(SheetingConfigService.Spec spec) {
         try {
-            // Ưu tiên tên file trong JSON (templateFileName), nếu trống → <table>-template.xlsx
             String fileName = firstNonBlank(spec.templateUploaded, defaultFileName(spec.table));
             if (fileName == null) return null;
             Path p = Paths.get(templatesDir, fileName);
@@ -337,9 +354,7 @@ public class SheetingExcelExportAction extends ListDataComponentAction<SheetingE
         for (String s : opts) if (notBlank(s)) return s;
         return null;
     }
-
     private static String orElse(String s, String def) { return (s == null || s.isBlank()) ? def : s; }
-
     private static String normalize(String s) {
         if (s == null) return "export";
         return s.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9._-]", "_");
