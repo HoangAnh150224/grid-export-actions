@@ -15,8 +15,10 @@ import io.jmix.core.FileRef;
 import io.jmix.core.FileStorage;
 import io.jmix.core.entity.KeyValueEntity;
 import io.jmix.flowui.Notifications;
+import io.jmix.flowui.component.grid.DataGrid;
 import io.jmix.flowui.component.twincolumn.TwinColumn;
 import io.jmix.flowui.component.upload.FileStorageUploadField;
+import io.jmix.flowui.model.DataContext;
 import io.jmix.flowui.model.KeyValueCollectionContainer;
 import io.jmix.flowui.view.*;
 
@@ -46,9 +48,12 @@ public class SheetingView extends StandardView {
 
     @ViewComponent("tablesDc") private KeyValueCollectionContainer tablesDc;
     @ViewComponent("fieldsDc") private KeyValueCollectionContainer fieldsDc;
+    @ViewComponent("selectedDc") private KeyValueCollectionContainer selectedDc;
 
     @ViewComponent private ComboBox<KeyValueEntity> tablesCb;
     @ViewComponent private TwinColumn<KeyValueEntity> colsTwin;
+    @ViewComponent private DataGrid<KeyValueEntity> varsGrid;
+
     @ViewComponent private Label tableInfo;
     @ViewComponent private Label jsonPreview;
 
@@ -62,6 +67,11 @@ public class SheetingView extends StandardView {
     private String currentTableFqn;
     private String templateUploadedName;  // chỉ giữ tên file trong ./app-templates
     private String currentSelectionJson = "";
+
+    // cache name -> tplVar để không mất khi thay đổi selection
+    private final Map<String, String> nameToVar = new LinkedHashMap<>();
+    @ViewComponent
+    private DataContext dataContext;
 
     @Subscribe
     public void onInit(InitEvent event) {
@@ -100,7 +110,15 @@ public class SheetingView extends StandardView {
         colsTwin.setItemLabelGenerator(kv -> Objects.toString(kv.getValue("name"), ""));
         tablesCb.addValueChangeListener(e -> onTableSelected(e.getValue()));
 
-        colsTwin.addValueChangeListener(e -> updateJsonState());
+        // Twin -> Grid
+        colsTwin.addValueChangeListener(e -> {
+            syncVarsFromTwin();
+            updateJsonState();
+        });
+
+        // sửa grid xong thì cập nhật JSON xem trước
+        selectedDc.addCollectionChangeListener(e -> updateJsonState());
+
         if (headerAnchorField != null) headerAnchorField.addValueChangeListener(e -> updateJsonState());
         if (dataAnchorField != null)   dataAnchorField.addValueChangeListener(e -> updateJsonState());
         if (templateHasHeaderCb != null) templateHasHeaderCb.addValueChangeListener(e -> updateJsonState());
@@ -114,18 +132,11 @@ public class SheetingView extends StandardView {
     @Subscribe("saveBtn")
     public void onSaveBtnClick(ClickEvent<Button> event) {
         if (isBlank(currentTableFqn)) { warn("Chưa chọn bảng"); return; }
-        if (colsTwin.getValue() == null || colsTwin.getValue().isEmpty()) {
+        if (selectedDc.getItems() == null || selectedDc.getItems().isEmpty()) {
             warn("Chưa chọn cột để lưu cấu hình"); return;
         }
 
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("table", currentTableFqn);
-        payload.put("columns", selectedColumns());
-        payload.put("sheetName",  sheetNameField != null ? nvl(sheetNameField.getValue(), "Export") : "Export");
-        payload.put("headerAnchor", trimOrNull(headerAnchorField != null ? headerAnchorField.getValue() : null));
-        payload.put("dataAnchor",   trimOrNull(dataAnchorField   != null ? dataAnchorField.getValue()   : null));
-        payload.put("templateHasHeader", templateHasHeaderCb != null && Boolean.TRUE.equals(templateHasHeaderCb.getValue()));
-        payload.put("templateUploaded", templateUploadedName); // <== chỉ 1 field
+        Map<String, Object> payload = buildPayload();
 
         String json;
         try {
@@ -155,12 +166,16 @@ public class SheetingView extends StandardView {
     @Subscribe("cancelBtn")
     public void onCancelBtnClick(ClickEvent<Button> event) {
         colsTwin.clear();
+        selectedDc.setItems(Collections.emptyList());
+        nameToVar.clear();
+
         if (templateUpload != null) templateUpload.clear();
         templateUploadedName = null;
         if (headerAnchorField != null) headerAnchorField.clear();
         if (dataAnchorField != null) dataAnchorField.clear();
         if (templateHasHeaderCb != null) templateHasHeaderCb.setValue(Boolean.TRUE);
         if (sheetNameField != null) sheetNameField.setValue("Export");
+
         updateJsonState();
         notifications.create("Đã hủy thay đổi (chưa lưu vào DB)")
                 .withType(Notifications.Type.DEFAULT).show();
@@ -178,6 +193,8 @@ public class SheetingView extends StandardView {
         tableInfo.setText("");
         fieldsDc.setItems(Collections.emptyList());
         colsTwin.clear();
+        selectedDc.setItems(Collections.emptyList());
+        nameToVar.clear();
         templateUploadedName = null;
         updateJsonState();
     }
@@ -188,6 +205,8 @@ public class SheetingView extends StandardView {
             tableInfo.setText("");
             fieldsDc.setItems(Collections.emptyList());
             colsTwin.clear();
+            selectedDc.setItems(Collections.emptyList());
+            nameToVar.clear();
             templateUploadedName = null;
             updateJsonState();
             return;
@@ -196,6 +215,7 @@ public class SheetingView extends StandardView {
         tableInfo.setText(quickInfo(sel));
         loadColumnsForTable(sel);
         restoreSavedConfigOrReset();
+        syncVarsFromTwin();
         updateJsonState();
     }
 
@@ -260,7 +280,12 @@ public class SheetingView extends StandardView {
     /* ===================== Restore & State ===================== */
 
     private void restoreSavedConfigOrReset() {
-        if (isBlank(currentTableFqn)) { colsTwin.clear(); return; }
+        if (isBlank(currentTableFqn)) {
+            colsTwin.clear();
+            selectedDc.setItems(Collections.emptyList());
+            nameToVar.clear();
+            return;
+        }
 
         dataManager.load(SheetingConfig.class)
                 .query("select e from SheetingConfig e where e.tableName = :t")
@@ -271,19 +296,49 @@ public class SheetingView extends StandardView {
                         @SuppressWarnings("unchecked")
                         Map<String, Object> json = objectMapper.readValue(cfg.getColumnsJson(), Map.class);
 
-                        // columns
+                        // Đọc tên cột + tplVar (hỗ trợ cấu trúc cũ và mới)
+                        Set<String> names = new LinkedHashSet<>();
+                        nameToVar.clear();
+
                         Object cols = json.get("columns");
-                        if (cols instanceof Collection<?> colList) {
-                            Set<String> names = colList.stream().filter(Objects::nonNull)
-                                    .map(Object::toString).filter(s -> !s.isBlank())
-                                    .collect(Collectors.toCollection(LinkedHashSet::new));
-                            Collection<KeyValueEntity> all = fieldsDc.getItems();
-                            if (all != null && !all.isEmpty()) {
-                                LinkedHashSet<KeyValueEntity> selected = all.stream()
-                                        .filter(kv -> names.contains(nvl(kv.getValue("name"))))
-                                        .collect(Collectors.toCollection(LinkedHashSet::new));
-                                colsTwin.setValue(selected);
+                        Object legacyVars = json.get("templateVars");
+                        Map<String, String> legacyVarMap = null;
+                        if (legacyVars instanceof Map<?, ?> m) {
+                            legacyVarMap = new HashMap<>();
+                            for (Map.Entry<?, ?> en : m.entrySet()) {
+                                legacyVarMap.put(String.valueOf(en.getKey()), String.valueOf(en.getValue()));
                             }
+                        }
+
+                        if (cols instanceof Collection<?> list) {
+                            for (Object it : list) {
+                                if (it == null) continue;
+                                if (it instanceof Map<?, ?> m) {
+                                    String name = nvl(m.get("name"));
+                                    if (!name.isBlank()) {
+                                        names.add(name);
+                                        String var = trimOrNull(nvl(m.get("tplVar"), null));
+                                        if (var != null) nameToVar.put(name, var);
+                                    }
+                                } else { // cấu trúc cũ: list<String>
+                                    String name = it.toString();
+                                    if (!name.isBlank()) {
+                                        names.add(name);
+                                        if (legacyVarMap != null && legacyVarMap.containsKey(name)) {
+                                            nameToVar.put(name, legacyVarMap.get(name));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // set selection TwinColumn
+                        Collection<KeyValueEntity> all = fieldsDc.getItems();
+                        if (all != null && !all.isEmpty()) {
+                            LinkedHashSet<KeyValueEntity> selected = all.stream()
+                                    .filter(kv -> names.contains(nvl(kv.getValue("name"))))
+                                    .collect(Collectors.toCollection(LinkedHashSet::new));
+                            colsTwin.setValue(selected);
                         }
 
                         // sheet & anchors
@@ -299,33 +354,45 @@ public class SheetingView extends StandardView {
 
                         // template file name
                         templateUploadedName = trimOrNull(objToStr(json.get("templateUploaded")));
-                        // (UploadField không set lại được tên file đã copy sang local — OK)
 
                         currentSelectionJson = cfg.getColumnsJson();
                         jsonPreview.setText(currentSelectionJson);
                     } catch (Exception ignore) {
                         colsTwin.clear();
+                        selectedDc.setItems(Collections.emptyList());
+                        nameToVar.clear();
                         templateUploadedName = null;
                         if (templateUpload != null) templateUpload.clear();
                     }
                 }, () -> {
                     colsTwin.clear();
+                    selectedDc.setItems(Collections.emptyList());
+                    nameToVar.clear();
                     templateUploadedName = null;
                     if (templateUpload != null) templateUpload.clear();
                 });
     }
 
+    private void syncVarsFromTwin() {
+        Collection<KeyValueEntity> sel = colsTwin.getValue();
+        List<KeyValueEntity> rows = new ArrayList<>();
+        if (sel != null) {
+            for (KeyValueEntity kv : sel) {
+                String name = nvl(kv.getValue("name"));
+                if (name.isBlank()) continue;
+                KeyValueEntity row = new KeyValueEntity();
+                row.setValue("name", name);
+                row.setValue("dataType", nvl(kv.getValue("dataType")));
+                row.setValue("tplVar", nameToVar.getOrDefault(name, ""));
+                rows.add(row);
+            }
+        }
+        selectedDc.setItems(rows);
+    }
+
     private void updateJsonState() {
         try {
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("table", currentTableFqn);
-            payload.put("columns", selectedColumns());
-            payload.put("sheetName",  sheetNameField != null ? nvl(sheetNameField.getValue(), "Export") : "Export");
-            payload.put("headerAnchor", headerAnchorField != null ? trimOrNull(headerAnchorField.getValue()) : null);
-            payload.put("dataAnchor",   dataAnchorField != null ? trimOrNull(dataAnchorField.getValue())   : null);
-            payload.put("templateHasHeader", templateHasHeaderCb != null && Boolean.TRUE.equals(templateHasHeaderCb.getValue()));
-            payload.put("templateUploaded", templateUploadedName);
-
+            Map<String, Object> payload = buildPayload();
             String json = objectMapper.writeValueAsString(payload);
             this.currentSelectionJson = json;
             jsonPreview.setText(json);
@@ -335,12 +402,64 @@ public class SheetingView extends StandardView {
         }
     }
 
-    private List<String> selectedColumns() {
+    private Map<String, Object> buildPayload() {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("table", currentTableFqn);
+
+        // columns mới: [{name, tplVar}]
+        List<Map<String, Object>> cols = selectedColumnsStructured();
+        payload.put("columns", cols);
+
+        // tương thích ngược
+        payload.put("columnsFlat", selectedColumnNames());
+        payload.put("templateVars", selectedVarMap());
+
+        payload.put("sheetName",  sheetNameField != null ? nvl(sheetNameField.getValue(), "Export") : "Export");
+        payload.put("headerAnchor", headerAnchorField != null ? trimOrNull(headerAnchorField.getValue()) : null);
+        payload.put("dataAnchor",   dataAnchorField != null ? trimOrNull(dataAnchorField.getValue())   : null);
+        payload.put("templateHasHeader", templateHasHeaderCb != null && Boolean.TRUE.equals(templateHasHeaderCb.getValue()));
+        payload.put("templateUploaded", templateUploadedName);
+        return payload;
+    }
+
+    private List<Map<String, Object>> selectedColumnsStructured() {
+        List<Map<String, Object>> out = new ArrayList<>();
+        Collection<KeyValueEntity> items = selectedDc.getItems();
+        if (items != null) {
+            for (KeyValueEntity kv : items) {
+                String name = nvl(kv.getValue("name"));
+                String var  = trimOrNull(nvl(kv.getValue("tplVar"), null));
+                if (!name.isEmpty()) {
+                    if (var == null) nameToVar.remove(name); else nameToVar.put(name, var);
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("name", name);
+                    if (var != null) m.put("tplVar", var);
+                    out.add(m);
+                }
+            }
+        }
+        return out;
+    }
+
+    private List<String> selectedColumnNames() {
         return colsTwin.getValue() == null ? Collections.emptyList()
                 : colsTwin.getValue().stream()
                 .map(kv -> nvl(kv.getValue("name")))
                 .filter(s -> !s.isEmpty())
                 .collect(Collectors.toList());
+    }
+
+    private Map<String, String> selectedVarMap() {
+        Map<String, String> map = new LinkedHashMap<>();
+        Collection<KeyValueEntity> items = selectedDc.getItems();
+        if (items != null) {
+            for (KeyValueEntity kv : items) {
+                String name = nvl(kv.getValue("name"));
+                String var  = trimOrNull(nvl(kv.getValue("tplVar"), null));
+                if (!name.isEmpty() && var != null) map.put(name, var);
+            }
+        }
+        return map;
     }
 
     /* ===================== Utils ===================== */

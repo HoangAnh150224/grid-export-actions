@@ -24,9 +24,19 @@
                 <property name="remarks" datatype="string"/>
             </properties>
         </keyValueCollection>
+
+        <!-- BẢNG MỚI: dữ liệu cho grid bên phải -->
+        <keyValueCollection id="selectedDc">
+            <properties>
+                <property name="name" datatype="string"/>
+                <property name="dataType" datatype="string"/>
+                <property name="tplVar" datatype="string"/>
+            </properties>
+        </keyValueCollection>
     </data>
 
-    <layout width="100%" height="100%" padding="false" spacing="true" expand="colsTwin">
+    <!-- Đừng đặt expand="colsTwin" ở đây vì colsTwin không phải child trực tiếp -->
+    <layout width="100%" height="100%" padding="false" spacing="true">
 
         <!-- Toolbar chọn bảng + cấu hình template -->
         <hbox width="100%" spacing="8px" alignItems="CENTER">
@@ -37,27 +47,40 @@
             </hbox>
 
             <hbox spacing="12px" alignItems="END">
-                <!-- Upload template Excel -->
-                <fileStorageUploadField id="templateUpload"
-                                        label="Template Excel"
-                                        width="260px"/>
-                <!-- Sheet name -->
+                <fileStorageUploadField id="templateUpload" label="Template Excel" width="260px"/>
                 <textField id="sheetNameField" label="Sheet name" width="180px"/>
-
-                <!-- Name Manager anchors -->
                 <textField id="headerAnchorField" label="Header Named Range" width="200px"/>
                 <textField id="dataAnchorField" label="Data Named Range" width="200px"/>
-                <checkbox id="templateHasHeaderCb" label="Template có header" />
+                <checkbox id="templateHasHeaderCb" label="Template có header"/>
             </hbox>
         </hbox>
 
-        <!-- Chọn cột -->
-        <twinColumn id="colsTwin"
-                    itemsContainer="fieldsDc"
-                    itemsColumnLabel="Danh sách cột không được in"
-                    selectedItemsColumnLabel="Danh sách cột được in"
-                    width="100%" height="100%"
-                    selectAllButtonsVisible="true"/>
+        <!-- Khu vực làm việc: trái = TwinColumn, phải = DataGrid mới -->
+        <hbox width="100%" height="100%" spacing="12px">
+            <!-- Trái: TwinColumn -->
+            <div id="twinPane" width="60%" height="100%">
+                <twinColumn id="colsTwin"
+                            itemsContainer="fieldsDc"
+                            itemsColumnLabel="Danh sách cột không được in"
+                            selectedItemsColumnLabel="Danh sách cột được in"
+                            width="100%" height="100%"
+                            selectAllButtonsVisible="true"/>
+            </div>
+
+            <!-- Phải: DataGrid mới hiển thị/nhập thêm thông tin cho các cột đã chọn -->
+            <div id="rightGridPane" width="40%" height="100%">
+                <dataGrid id="varsGrid"
+                          dataContainer="selectedDc"
+                          width="100%" height="100%"
+                          editorBuffered="false"
+                          themeNames="row-stripes">
+                    <columns>
+                        <column property="name" header="Cột sẽ in"/>
+                        <column property="tplVar" header="Biến trong template" editable="true"/>
+                    </columns>
+                </dataGrid>
+            </div>
+        </hbox>
 
         <!-- JSON state nội bộ (ẩn) -->
         <label id="jsonPreview" visible="false"/>

@@ -2,6 +2,7 @@ package com.gridexportactions.sheeting;
 
 import com.gridexportactions.view.export.OffsetExcelExporter;
 import io.jmix.core.entity.EntityValues;
+import io.jmix.core.metamodel.model.MetaPropertyPath;
 import io.jmix.flowui.action.ActionType;
 import io.jmix.flowui.action.list.ListDataComponentAction;
 import io.jmix.flowui.component.ListDataComponent;
@@ -169,20 +170,24 @@ public class SheetingExcelExportAction extends ListDataComponentAction<SheetingE
     /* ------------------ Helpers: read grid, values, formatting ------------------ */
 
     private static List<Object> collectEntities(DataGrid<Object> grid) {
-        if (grid instanceof ListDataComponent<?> ldc &&
-                ldc.getItems() instanceof ContainerDataGridItems<?> items) {
-            return new ArrayList<>(items.getContainer().getItems());
+        if (grid instanceof ListDataComponent) {
+            ListDataComponent<?> ldc = (ListDataComponent<?>) grid;
+            if (ldc.getItems() instanceof ContainerDataGridItems) {
+                ContainerDataGridItems<?> items = (ContainerDataGridItems<?>) ldc.getItems();
+                return new ArrayList<>(items.getContainer().getItems());
+            }
         }
         return List.of();
     }
 
     private static List<String> visibleMetaPropertyPaths(DataGrid<Object> grid) {
-        var edg = (EnhancedDataGrid) grid;
+        @SuppressWarnings("unchecked")
+        EnhancedDataGrid<Object> edg = (EnhancedDataGrid<Object>) grid;
         return grid.getAllColumns().stream()
                 .filter(DataGrid.Column::isVisible)
-                .map(edg::getColumnMetaPropertyPath)
+                .map(col -> edg.getColumnMetaPropertyPath(col))   // MetaPropertyPath
                 .filter(Objects::nonNull)
-                .map(mpp -> mpp.toPathString())
+                .map(MetaPropertyPath::toPathString)
                 .collect(Collectors.toList());
     }
 
