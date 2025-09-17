@@ -7,7 +7,8 @@ import com.vaadin.flow.component.ClickEvent;
 import com.vaadin.flow.component.button.Button;
 import com.vaadin.flow.component.checkbox.Checkbox;
 import com.vaadin.flow.component.combobox.ComboBox;
-import com.vaadin.flow.component.html.Label;
+import com.vaadin.flow.component.html.Div;
+import com.vaadin.flow.component.html.Span;
 import com.vaadin.flow.component.textfield.TextField;
 import com.vaadin.flow.router.Route;
 import io.jmix.core.DataManager;
@@ -18,7 +19,6 @@ import io.jmix.flowui.Notifications;
 import io.jmix.flowui.component.grid.DataGrid;
 import io.jmix.flowui.component.twincolumn.TwinColumn;
 import io.jmix.flowui.component.upload.FileStorageUploadField;
-import io.jmix.flowui.model.DataContext;
 import io.jmix.flowui.model.KeyValueCollectionContainer;
 import io.jmix.flowui.view.*;
 
@@ -54,8 +54,8 @@ public class SheetingView extends StandardView {
     @ViewComponent private TwinColumn<KeyValueEntity> colsTwin;
     @ViewComponent private DataGrid<KeyValueEntity> varsGrid;
 
-    @ViewComponent private Label tableInfo;
-    @ViewComponent private Label jsonPreview;
+    @ViewComponent private Span tableInfo;
+    @ViewComponent private Span jsonPreview;
 
     // Template + Name Manager
     @ViewComponent private FileStorageUploadField templateUpload;
@@ -65,13 +65,11 @@ public class SheetingView extends StandardView {
     @ViewComponent private TextField sheetNameField;
 
     private String currentTableFqn;
-    private String templateUploadedName;  // chỉ giữ tên file trong ./app-templates
+    private String templateUploadedName;  // ./app-templates/<name>
     private String currentSelectionJson = "";
 
-    // cache name -> tplVar để không mất khi thay đổi selection
+    // nhớ mapping name -> tplVar (để preserve khi twin thay đổi)
     private final Map<String, String> nameToVar = new LinkedHashMap<>();
-    @ViewComponent
-    private DataContext dataContext;
 
     @Subscribe
     public void onInit(InitEvent event) {
@@ -82,14 +80,14 @@ public class SheetingView extends StandardView {
         if (templateHasHeaderCb != null) templateHasHeaderCb.setValue(Boolean.TRUE);
         if (sheetNameField != null) sheetNameField.setValue("Export");
 
-        // Upload -> copy file vào ./app-templates và lưu lại tên
+        // Upload template
         if (templateUpload != null) {
             templateUpload.addFileUploadSucceededListener(e -> {
                 FileRef ref = templateUpload.getValue();
                 if (ref == null) return;
                 if (isBlank(currentTableFqn)) { warn("Chưa chọn bảng"); return; }
                 try (InputStream is = fileStorage.openStream(ref)) {
-                    String fileName = ref.getFileName(); // giữ nguyên tên người dùng
+                    String fileName = ref.getFileName();
                     Path dir = Paths.get("./app-templates");
                     Files.createDirectories(dir);
                     Files.copy(is, dir.resolve(fileName), StandardCopyOption.REPLACE_EXISTING);
@@ -110,13 +108,15 @@ public class SheetingView extends StandardView {
         colsTwin.setItemLabelGenerator(kv -> Objects.toString(kv.getValue("name"), ""));
         tablesCb.addValueChangeListener(e -> onTableSelected(e.getValue()));
 
-        // Twin -> Grid
+        // Chỉ nghe valueChange chuẩn của TwinColumn để đồng bộ panel phải
         colsTwin.addValueChangeListener(e -> {
             syncVarsFromTwin();
+            selectFirstRowIfAny();
             updateJsonState();
         });
 
-        // sửa grid xong thì cập nhật JSON xem trước
+        // Khi sửa trong grid/form
+        selectedDc.addItemPropertyChangeListener(e -> updateJsonState());
         selectedDc.addCollectionChangeListener(e -> updateJsonState());
 
         if (headerAnchorField != null) headerAnchorField.addValueChangeListener(e -> updateJsonState());
@@ -137,7 +137,6 @@ public class SheetingView extends StandardView {
         }
 
         Map<String, Object> payload = buildPayload();
-
         String json;
         try {
             json = objectMapper.writeValueAsString(payload);
@@ -216,7 +215,17 @@ public class SheetingView extends StandardView {
         loadColumnsForTable(sel);
         restoreSavedConfigOrReset();
         syncVarsFromTwin();
+        selectFirstRowIfAny();
         updateJsonState();
+    }
+
+    private void selectFirstRowIfAny() {
+        Collection<KeyValueEntity> items = selectedDc.getItems();
+        if (items != null && !items.isEmpty()) {
+            varsGrid.select(items.iterator().next());
+        } else {
+            varsGrid.deselectAll();
+        }
     }
 
     private List<KeyValueEntity> loadTablesFromDB() {
@@ -296,7 +305,6 @@ public class SheetingView extends StandardView {
                         @SuppressWarnings("unchecked")
                         Map<String, Object> json = objectMapper.readValue(cfg.getColumnsJson(), Map.class);
 
-                        // Đọc tên cột + tplVar (hỗ trợ cấu trúc cũ và mới)
                         Set<String> names = new LinkedHashSet<>();
                         nameToVar.clear();
 
@@ -320,7 +328,7 @@ public class SheetingView extends StandardView {
                                         String var = trimOrNull(nvl(m.get("tplVar"), null));
                                         if (var != null) nameToVar.put(name, var);
                                     }
-                                } else { // cấu trúc cũ: list<String>
+                                } else {
                                     String name = it.toString();
                                     if (!name.isBlank()) {
                                         names.add(name);
@@ -332,7 +340,6 @@ public class SheetingView extends StandardView {
                             }
                         }
 
-                        // set selection TwinColumn
                         Collection<KeyValueEntity> all = fieldsDc.getItems();
                         if (all != null && !all.isEmpty()) {
                             LinkedHashSet<KeyValueEntity> selected = all.stream()
@@ -341,7 +348,6 @@ public class SheetingView extends StandardView {
                             colsTwin.setValue(selected);
                         }
 
-                        // sheet & anchors
                         if (sheetNameField != null) {
                             String sheet = Objects.toString(json.getOrDefault("sheetName", "Export"), "Export");
                             sheetNameField.setValue(sheet);
@@ -351,8 +357,6 @@ public class SheetingView extends StandardView {
                         if (templateHasHeaderCb != null && json.containsKey("templateHasHeader")) {
                             templateHasHeaderCb.setValue(Boolean.parseBoolean(nvl(json.get("templateHasHeader"), "true")));
                         }
-
-                        // template file name
                         templateUploadedName = trimOrNull(objToStr(json.get("templateUploaded")));
 
                         currentSelectionJson = cfg.getColumnsJson();
@@ -373,21 +377,67 @@ public class SheetingView extends StandardView {
                 });
     }
 
+    /** TwinColumn -> selectedDc, copy metadata và giữ tplVar đã nhập. */
     private void syncVarsFromTwin() {
+        // preserve tplVar hiện có trước khi rebuild
+        Map<String, String> existingTplVars = new HashMap<>();
+        Collection<KeyValueEntity> oldItems = selectedDc.getItems();
+        if (oldItems != null) {
+            for (KeyValueEntity kv : oldItems) {
+                String name = nvl(kv.getValue("name"));
+                String var  = trimOrNull(nvl(kv.getValue("tplVar"), null));
+                if (!name.isEmpty() && var != null) existingTplVars.put(name, var);
+            }
+        }
+
         Collection<KeyValueEntity> sel = colsTwin.getValue();
+        Map<String, KeyValueEntity> metaByName = new HashMap<>();
+        if (fieldsDc.getItems() != null) {
+            for (KeyValueEntity kv : fieldsDc.getItems()) {
+                metaByName.put(nvl(kv.getValue("name")), kv);
+            }
+        }
         List<KeyValueEntity> rows = new ArrayList<>();
         if (sel != null) {
             for (KeyValueEntity kv : sel) {
                 String name = nvl(kv.getValue("name"));
                 if (name.isBlank()) continue;
+                KeyValueEntity src = metaByName.get(name);
                 KeyValueEntity row = new KeyValueEntity();
                 row.setValue("name", name);
-                row.setValue("dataType", nvl(kv.getValue("dataType")));
-                row.setValue("tplVar", nameToVar.getOrDefault(name, ""));
+                row.setValue("dataType", src != null ? src.getValue("dataType") : null);
+                row.setValue("size", src != null ? src.getValue("size") : null);
+                row.setValue("nullable", src != null ? src.getValue("nullable") : null);
+                row.setValue("default", src != null ? src.getValue("default") : null);
+                row.setValue("remarks", src != null ? src.getValue("remarks") : null);
+                row.setValue("tplVar", existingTplVars.getOrDefault(name, ""));
                 rows.add(row);
             }
         }
         selectedDc.setItems(rows);
+    }
+
+    private void addToSelectedByName(String name) {
+        if (fieldsDc.getItems() == null) return;
+        KeyValueEntity found = fieldsDc.getItems().stream()
+                .filter(kv -> name.equals(Objects.toString(kv.getValue("name"), "")))
+                .findFirst().orElse(null);
+        if (found == null) return;
+        LinkedHashSet<KeyValueEntity> cur = new LinkedHashSet<>();
+        if (colsTwin.getValue() != null) cur.addAll(colsTwin.getValue());
+        if (!cur.contains(found)) cur.add(found);
+        colsTwin.setValue(cur);
+    }
+
+    private void selectInRightPaneByName(String name) {
+        Collection<KeyValueEntity> items = selectedDc.getItems();
+        if (items == null) return;
+        for (KeyValueEntity row : items) {
+            if (name.equals(Objects.toString(row.getValue("name"), ""))) {
+                varsGrid.select(row);
+                return;
+            }
+        }
     }
 
     private void updateJsonState() {
@@ -405,15 +455,9 @@ public class SheetingView extends StandardView {
     private Map<String, Object> buildPayload() {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("table", currentTableFqn);
-
-        // columns mới: [{name, tplVar}]
-        List<Map<String, Object>> cols = selectedColumnsStructured();
-        payload.put("columns", cols);
-
-        // tương thích ngược
-        payload.put("columnsFlat", selectedColumnNames());
-        payload.put("templateVars", selectedVarMap());
-
+        payload.put("columns", selectedColumnsStructured());
+        payload.put("columnsFlat", selectedColumnNames()); // compat cũ
+        payload.put("templateVars", selectedVarMap());     // compat cũ
         payload.put("sheetName",  sheetNameField != null ? nvl(sheetNameField.getValue(), "Export") : "Export");
         payload.put("headerAnchor", headerAnchorField != null ? trimOrNull(headerAnchorField.getValue()) : null);
         payload.put("dataAnchor",   dataAnchorField != null ? trimOrNull(dataAnchorField.getValue())   : null);
@@ -479,7 +523,7 @@ public class SheetingView extends StandardView {
                 || s.equals("performance_schema") || s.equals("sys") || s.equals("system")
                 || (s.startsWith("sys") && s.length() > 3);
     }
-    private static String nvl(Object o) { return nvl(o, ""); }
+    private static String nvl(Object o) { return o == null ? "" : o.toString(); }
     private static String nvl(Object o, String def) { return o == null ? def : o.toString(); }
     private static String objToStr(Object o) { return o == null ? null : o.toString(); }
     private static String trimOrNull(String s) { if (s == null) return null; String t = s.trim(); return t.isEmpty() ? null : t; }
@@ -498,4 +542,5 @@ public class SheetingView extends StandardView {
         String remarks = nvl(e.getValue("remarks"), "");
         return (type.isEmpty() ? "" : "[" + type + "] ") + remarks;
     }
+
 }

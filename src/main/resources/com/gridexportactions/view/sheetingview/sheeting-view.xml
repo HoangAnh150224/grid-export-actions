@@ -25,25 +25,28 @@
             </properties>
         </keyValueCollection>
 
-        <!-- BẢNG MỚI: dữ liệu cho grid bên phải -->
+        <!-- Cột được in + metadata + biến template -->
         <keyValueCollection id="selectedDc">
             <properties>
                 <property name="name" datatype="string"/>
                 <property name="dataType" datatype="string"/>
+                <property name="size" datatype="int"/>
+                <property name="nullable" datatype="boolean"/>
+                <property name="default" datatype="string"/>
+                <property name="remarks" datatype="string"/>
                 <property name="tplVar" datatype="string"/>
             </properties>
         </keyValueCollection>
     </data>
 
-    <!-- Đừng đặt expand="colsTwin" ở đây vì colsTwin không phải child trực tiếp -->
     <layout width="100%" height="100%" padding="false" spacing="true">
 
-        <!-- Toolbar chọn bảng + cấu hình template -->
+        <!-- Toolbar -->
         <hbox width="100%" spacing="8px" alignItems="CENTER">
             <hbox spacing="8px" alignItems="CENTER">
-                <label text="Chọn bảng" styleName="h4"/>
+                <span text="Chọn bảng" classNames="h4"/>
                 <comboBox id="tablesCb" width="420px"/>
-                <label id="tableInfo" width="100%"/>
+                <span id="tableInfo" width="100%"/>
             </hbox>
 
             <hbox spacing="12px" alignItems="END">
@@ -55,35 +58,53 @@
             </hbox>
         </hbox>
 
-        <!-- Khu vực làm việc: trái = TwinColumn, phải = DataGrid mới -->
+        <!-- Work area: trái TwinColumn, phải Grid + Form -->
         <hbox width="100%" height="100%" spacing="12px">
             <!-- Trái: TwinColumn -->
-            <div id="twinPane" width="60%" height="100%">
+            <div id="twinPane" width="45%" height="100%">
                 <twinColumn id="colsTwin"
+
                             itemsContainer="fieldsDc"
-                            itemsColumnLabel="Danh sách cột không được in"
-                            selectedItemsColumnLabel="Danh sách cột được in"
+                            itemsColumnLabel="Danh sách cột"
+                            selectedItemsColumnLabel="Cột sẽ in"
                             width="100%" height="100%"
                             selectAllButtonsVisible="true"/>
             </div>
 
-            <!-- Phải: DataGrid mới hiển thị/nhập thêm thông tin cho các cột đã chọn -->
-            <div id="rightGridPane" width="40%" height="100%">
+            <!-- Phải: Grid (sửa trực tiếp tplVar) + Form chi tiết -->
+            <vbox id="rightPane" width="55%" height="100%" spacing="10px">
                 <dataGrid id="varsGrid"
                           dataContainer="selectedDc"
-                          width="100%" height="100%"
+                          width="100%" height="55%"
                           editorBuffered="false"
                           themeNames="row-stripes">
                     <columns>
                         <column property="name" header="Cột sẽ in"/>
-                        <column property="tplVar" header="Biến trong template" editable="true"/>
+                        <column property="tplVar" header="Tên biến trong template" editable="true"/>
                     </columns>
                 </dataGrid>
-            </div>
+
+                <formLayout id="detailForm" width="100%" height="45%">
+                    <textField id="detailName"     label="Cột"              readOnly="true"
+                               dataContainer="selectedDc" property="name"/>
+                    <textField id="detailType"     label="Kiểu dữ liệu"     readOnly="true"
+                               dataContainer="selectedDc" property="dataType"/>
+                    <textField id="detailSize"     label="Kích thước"       readOnly="true"
+                               dataContainer="selectedDc" property="size"/>
+                    <checkbox  id="detailNullable" label="Nullable"         readOnly="true"
+                               dataContainer="selectedDc" property="nullable"/>
+                    <textField id="detailDefault"  label="Giá trị mặc định" readOnly="true"
+                               dataContainer="selectedDc" property="default"/>
+                    <textField id="detailRemarks"  label="Ghi chú"          readOnly="true"
+                               dataContainer="selectedDc" property="remarks"/>
+                    <textField id="tplVarField"    label="Tên biến (Excel)"
+                               dataContainer="selectedDc" property="tplVar"/>
+                </formLayout>
+            </vbox>
         </hbox>
 
-        <!-- JSON state nội bộ (ẩn) -->
-        <label id="jsonPreview" visible="false"/>
+        <!-- JSON state (ẩn) -->
+        <span id="jsonPreview" visible="false"/>
 
         <hbox spacing="8px">
             <button id="saveBtn" text="Lưu" themeNames="success" icon="vaadin:check"/>
