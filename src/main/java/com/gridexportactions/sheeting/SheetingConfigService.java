@@ -20,7 +20,6 @@ import org.springframework.stereotype.Component;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.*;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -57,7 +56,6 @@ public class SheetingConfigService {
                 .toList();
         if (candidates.isEmpty()) return Optional.empty();
 
-        // Tránh lỗi parser với IN(lower(...)): build OR thủ công
         String where = IntStream.range(0, candidates.size())
                 .mapToObj(i -> "lower(e.tableName) = :c" + i)
                 .collect(Collectors.joining(" or "));
@@ -65,9 +63,7 @@ public class SheetingConfigService {
         var loader = dataManager.load(SheetingConfig.class)
                 .query("select e from SheetingConfig e where " + where);
 
-        for (int i = 0; i < candidates.size(); i++) {
-            loader.parameter("c" + i, candidates.get(i));
-        }
+        for (int i = 0; i < candidates.size(); i++) loader.parameter("c" + i, candidates.get(i));
 
         List<SheetingConfig> list = loader.list();
         if (list.isEmpty()) return Optional.empty();
@@ -112,64 +108,18 @@ public class SheetingConfigService {
         return order;
     }
 
-    /** Filter cột theo propertyOrder; cho phép cả cột ảo nếu includeValueProviderCols=true */
-    public java.util.function.Predicate<DataGrid.Column<Object>> buildColumnFilter(
-            DataGrid<?> grid, List<String> propertyOrder, boolean includeValueProviderCols) {
-        Set<String> allow = new HashSet<>(propertyOrder);
+    /** Map DB column (lowercase) -> property path trong Grid, để lookup nhanh */
+    public Map<String, String> buildDbToPropertyPathMap(DataGrid<?> grid) {
+        Map<String, String> map = new LinkedHashMap<>();
         var edg = (EnhancedDataGrid) grid;
-        return c -> {
-            var mpp = edg.getColumnMetaPropertyPath(c);
-            if (mpp == null) {
-                return includeValueProviderCols && c.isVisible();
-            }
-            return allow.contains(mpp.toPathString());
-        };
-    }
-
-    // Tương thích chỗ cũ
-    public java.util.function.Predicate<DataGrid.Column<Object>> buildColumnFilter(
-            DataGrid<?> grid, List<String> propertyOrder) {
-        return buildColumnFilter(grid, propertyOrder, false);
-    }
-
-    /** Áp các "virtualColumns" từ spec vào Grid (chỉ thêm 1 lần) */
-    public void applyVirtualColumns(DataGrid<?> grid, Spec spec) {
-        if (spec == null || spec.virtualColumns.isEmpty()) return;
-
-        // Map DB column -> property path
-        Map<String, String> dbToProperty = buildDbToPropertyPathMap(grid);
-
-        for (VirtualColumn vc : spec.virtualColumns) {
-            String key = "virt:" + vc.key;
-            boolean exists = grid.getAllColumns().stream().anyMatch(c -> key.equals(c.getKey()));
-            if (exists) continue;
-
-            // property paths cho concatOf
-            List<String> propPaths = new ArrayList<>();
-            for (String db : vc.concatOf) {
-                String pp = dbToProperty.get(safeLower(db));
-                if (pp != null) propPaths.add(pp);
-            }
-            if (propPaths.isEmpty()) continue;
-
-            // provider => đọc entity theo path & join
-            Function<Object, String> provider = entity -> {
-                List<String> parts = new ArrayList<>();
-                Object cur = entity;
-                for (String path : propPaths) {
-                    Object v = readByPath(cur, path);
-                    parts.add(v == null ? "" : String.valueOf(v));
-                }
-                return parts.stream().filter(s -> !s.isBlank()).collect(Collectors.joining(vc.delimiter));
-            };
-
-            @SuppressWarnings("unchecked")
-            DataGrid.Column<Object> newCol = ((DataGrid<Object>) grid).addColumn(provider::apply);
-            newCol.setKey(key);
-            newCol.setHeader(vc.header == null ? key : vc.header);
-            newCol.setAutoWidth(true);
-            newCol.setVisible(true);
+        for (var col : ((DataGrid<Object>) grid).getAllColumns()) {
+            var mpp = edg.getColumnMetaPropertyPath(col);
+            if (mpp == null) continue;
+            MetaProperty mp = mpp.getMetaProperty();
+            String db = safeLower(getDatabaseColumnName(mp));
+            if (db != null && !db.isBlank()) map.put(db, mpp.toPathString());
         }
+        return map;
     }
 
     /* ===================== SPEC / JSON ===================== */
@@ -183,112 +133,59 @@ public class SheetingConfigService {
 
             Spec s = new Spec();
             s.table = table;
-            s.columns = toStringList(map.get("columns"));
             s.sheetName = Objects.toString(map.getOrDefault("sheetName", "Export"), "Export");
-
-            // anchors + template file name
-            s.headerAnchor = objToStr(map.get("headerAnchor"));
-            s.dataAnchor = objToStr(map.get("dataAnchor"));
             s.templateHasHeader = Boolean.parseBoolean(
                     Objects.toString(map.getOrDefault("templateHasHeader", "true"))
             );
-            s.templateUploaded = objToStr(map.get("templateUploaded")); // <== chỉ 1 field
+            s.templateUploaded = objToStr(map.get("templateUploaded"));
+            s.headerAnchor = objToStr(map.get("headerAnchor")); // optional
+            s.dataAnchor = objToStr(map.get("dataAnchor"));     // optional
 
-            // virtual columns
-            Object vcols = map.get("virtualColumns");
-            if (vcols instanceof Collection<?> col) {
-                for (Object o : col) {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> m = (Map<String, Object>) o;
-
-                    VirtualColumn vc = new VirtualColumn();
-                    vc.key = Objects.toString(m.get("key"), "");
-                    vc.header = Objects.toString(m.get("header"), vc.key);
-                    vc.delimiter = Objects.toString(m.getOrDefault("delimiter", " "), " ");
-                    vc.concatOf = toStringList(m.get("concatOf"));
-
-                    if (!vc.key.isBlank() && !vc.concatOf.isEmpty()) {
-                        s.virtualColumns.add(vc);
+            // Parse columns: chấp nhận [{name,tplVar}] hoặc ["colA","colB"]
+            Object cols = map.get("columns");
+            if (cols instanceof Collection<?> arr) {
+                for (Object it : arr) {
+                    if (it instanceof Map<?,?> m) {
+                        String name = toStr(m.get("name"));
+                        if (name.isBlank()) continue;
+                        s.columns.add(name);
+                        String var = toStr(m.get("tplVar"));
+                        if (!var.isBlank()) s.dbToTplVar.put(name.toLowerCase(Locale.ROOT), var);
+                    } else if (it != null) {
+                        String name = it.toString().trim();
+                        if (!name.isBlank()) s.columns.add(name);
                     }
                 }
             }
-            return Optional.of(s);
+
+            // Back-compat templateVars {dbCol -> var}
+            Object tv = map.get("templateVars");
+            if (tv instanceof Map<?,?> tm) {
+                for (var e : tm.entrySet()) {
+                    String k = toStr(e.getKey()).toLowerCase(Locale.ROOT);
+                    String v = toStr(e.getValue());
+                    if (!k.isBlank() && !v.isBlank()) s.dbToTplVar.putIfAbsent(k, v);
+                }
+            }
+
+            // Nếu thiếu columns mà có columnsFlat thì lấp vào
+            Object cf = map.get("columnsFlat");
+            if (s.columns.isEmpty() && cf instanceof Collection<?> fl) {
+                for (Object o : fl) if (o != null) {
+                    String n = o.toString().trim();
+                    if (!n.isBlank()) s.columns.add(n);
+                }
+            }
+
+            return Optional.of(s.withResolvedTable(table));
         } catch (Exception e) {
             return Optional.empty();
         }
     }
 
-    /** (Optional) serialize Spec lại JSON nếu bạn cần ghi DB từ service này */
-    private String specToJson(Spec s) {
-        try {
-            Map<String, Object> out = new LinkedHashMap<>();
-            out.put("columns", s.columns == null ? List.of() : s.columns);
-            out.put("sheetName", s.sheetName == null ? "Export" : s.sheetName);
-            out.put("headerAnchor", s.headerAnchor);
-            out.put("dataAnchor", s.dataAnchor);
-            out.put("templateHasHeader", s.templateHasHeader);
-            out.put("templateUploaded", s.templateUploaded); // <== chỉ 1 field
-
-            List<Map<String, Object>> vlist = new ArrayList<>();
-            if (s.virtualColumns != null) {
-                for (VirtualColumn vc : s.virtualColumns) {
-                    if (vc == null) continue;
-                    Map<String, Object> m = new LinkedHashMap<>();
-                    m.put("key", vc.key);
-                    m.put("header", vc.header);
-                    m.put("concatOf", vc.concatOf == null ? List.of() : vc.concatOf);
-                    m.put("delimiter", vc.delimiter == null ? " " : vc.delimiter);
-                    vlist.add(m);
-                }
-            }
-            out.put("virtualColumns", vlist);
-
-            return objectMapper.writeValueAsString(out);
-        } catch (Exception e) {
-            return "{\"columns\":[],\"virtualColumns\":[]}";
-        }
-    }
-
     /* ===================== Helpers ===================== */
 
-    private Map<String, String> buildDbToPropertyPathMap(DataGrid<?> grid) {
-        Map<String, String> map = new LinkedHashMap<>();
-        var edg = (EnhancedDataGrid) grid;
-        for (var col : ((DataGrid<Object>) grid).getAllColumns()) {
-            var mpp = edg.getColumnMetaPropertyPath(col);
-            if (mpp == null) continue;
-            MetaProperty mp = mpp.getMetaProperty();
-            String db = safeLower(getDatabaseColumnName(mp));
-            if (db != null && !db.isBlank()) {
-                map.put(db, mpp.toPathString());
-            }
-        }
-        return map;
-    }
-
-    private Object readByPath(Object bean, String path) {
-        if (bean == null || path == null || path.isBlank()) return null;
-        Object cur = bean;
-        for (String seg : path.split("\\.")) {
-            if (cur == null) return null;
-            cur = invokeGetter(cur, seg);
-        }
-        return cur;
-    }
-
-    private Object invokeGetter(Object obj, String prop) {
-        String base = prop.substring(0,1).toUpperCase(Locale.ROOT) + prop.substring(1);
-        for (String name : new String[]{"get"+base, "is"+base}) {
-            try { return obj.getClass().getMethod(name).invoke(obj); }
-            catch (Exception ignore) {}
-        }
-        return null;
-    }
-
-    private List<String> toStringList(Object o) {
-        if (!(o instanceof Collection<?> c)) return List.of();
-        return c.stream().filter(Objects::nonNull).map(Object::toString).collect(Collectors.toList());
-    }
+    private String toStr(Object o) { return o == null ? "" : o.toString().trim(); }
     private String safeLower(String s){ return s==null?null:s.toLowerCase(Locale.ROOT); }
     private String norm(String s){ return s==null?"":s.replace("\"","").trim().toLowerCase(Locale.ROOT); }
     private String emptyToNull(String s){ return (s==null||s.isBlank())?null:s; }
@@ -313,7 +210,6 @@ public class SheetingConfigService {
             if (s != null && n != null) set.add(norm(s + "." + n));
             if (s == null && n != null) set.add(norm("public." + n));
         }
-        // thêm biến thể bỏ schema
         set.addAll(
                 set.stream()
                         .map(x -> x.contains(".") ? x.substring(x.indexOf('.') + 1) : x)
@@ -366,16 +262,18 @@ public class SheetingConfigService {
 
     public static class Spec {
         public String table;
-        public List<String> columns = List.of();
+        public List<String> columns = new ArrayList<>();
         public String sheetName = "Export";
 
         // Template + anchors (tên file nằm ở ./app-templates)
-        public String headerAnchor;
-        public String dataAnchor;
+        public String headerAnchor;          // optional
+        public String dataAnchor;            // optional
         public boolean templateHasHeader = true;
-        public String templateUploaded;       // <== duy nhất
+        public String templateUploaded;      // file template
 
-        public List<VirtualColumn> virtualColumns = new ArrayList<>();
+        // mapping DB col -> tplVar
+        public Map<String,String> dbToTplVar = new LinkedHashMap<>();
+
         public Spec withResolvedTable(String t){ this.table=t; return this; }
 
         public boolean hasTemplate() {
@@ -383,14 +281,6 @@ public class SheetingConfigService {
         }
     }
 
-    public static class VirtualColumn {
-        public String key;
-        public String header;
-        public List<String> concatOf = List.of();
-        public String delimiter = " ";
-    }
-
-    /* ===================== misc helpers ===================== */
     private static String objToStr(Object o) {
         if (o == null) return null;
         String s = o.toString().trim();

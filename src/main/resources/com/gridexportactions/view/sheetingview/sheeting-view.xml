@@ -52,64 +52,62 @@
             <hbox spacing="12px" alignItems="END">
                 <fileStorageUploadField id="templateUpload" label="Template Excel" width="260px"/>
                 <textField id="sheetNameField" label="Sheet name" width="180px"/>
-                <textField id="headerAnchorField" label="Header Named Range" width="200px"/>
-                <textField id="dataAnchorField" label="Data Named Range" width="200px"/>
                 <checkbox id="templateHasHeaderCb" label="Template có header"/>
             </hbox>
         </hbox>
 
-        <!-- Work area: trái TwinColumn, phải Grid + Form -->
+        <!-- Work area: trái Grid nguồn, giữa nút chuyển, phải Grid chọn + Form -->
         <hbox width="100%" height="100%" spacing="12px">
-            <!-- Trái: TwinColumn -->
-            <div id="twinPane" width="45%" height="100%">
-                <twinColumn id="colsTwin"
-
-                            itemsContainer="fieldsDc"
-                            itemsColumnLabel="Danh sách cột"
-                            selectedItemsColumnLabel="Cột sẽ in"
-                            width="100%" height="100%"
-                            selectAllButtonsVisible="true"/>
-            </div>
-
-            <!-- Phải: Grid (sửa trực tiếp tplVar) + Form chi tiết -->
-            <vbox id="rightPane" width="55%" height="100%" spacing="10px">
-                <dataGrid id="varsGrid"
-                          dataContainer="selectedDc"
-                          width="100%" height="55%"
-                          editorBuffered="false"
+            <!-- Trái: Grid liệt kê toàn bộ cột của bảng -->
+            <vbox width="45%" height="100%" spacing="8px">
+                <span classNames="h5" text="Danh sách cột"/>
+                <dataGrid id="fieldsGrid"
+                          dataContainer="fieldsDc"
+                          width="100%" height="100%"
+                          selectionMode="SINGLE"
                           themeNames="row-stripes">
                     <columns>
-                        <column property="name" header="Cột sẽ in"/>
-                        <column property="tplVar" header="Tên biến trong template" editable="true"/>
+                        <column property="name" header="Tên cột" autoWidth="true"/>
+                        <column property="dataType" header="Kiểu" autoWidth="true"/>
+                        <column property="size" header="Size" autoWidth="true"/>
+                        <column property="nullable" header="Null?" autoWidth="true"/>
                     </columns>
                 </dataGrid>
+            </vbox>
 
-                <formLayout id="detailForm" width="100%" height="45%">
-                    <textField id="detailName"     label="Cột"              readOnly="true"
-                               dataContainer="selectedDc" property="name"/>
-                    <textField id="detailType"     label="Kiểu dữ liệu"     readOnly="true"
-                               dataContainer="selectedDc" property="dataType"/>
-                    <textField id="detailSize"     label="Kích thước"       readOnly="true"
-                               dataContainer="selectedDc" property="size"/>
-                    <checkbox  id="detailNullable" label="Nullable"         readOnly="true"
-                               dataContainer="selectedDc" property="nullable"/>
-                    <textField id="detailDefault"  label="Giá trị mặc định" readOnly="true"
-                               dataContainer="selectedDc" property="default"/>
-                    <textField id="detailRemarks"  label="Ghi chú"          readOnly="true"
-                               dataContainer="selectedDc" property="remarks"/>
-                    <textField id="tplVarField"    label="Tên biến (Excel)"
-                               dataContainer="selectedDc" property="tplVar"/>
-                </formLayout>
+            <!-- Giữa: nút chuyển -->
+            <vbox width="80px" alignItems="CENTER" justifyContent="CENTER" spacing="8px">
+                <button id="addBtn"       icon="vaadin:angle-right"         title="Thêm các cột đã chọn"/>
+                <button id="addAllBtn"    icon="vaadin:angle-double-right"  title="Thêm tất cả"/>
+                <button id="removeBtn"    icon="vaadin:angle-left"          title="Gỡ các cột đã chọn bên phải"/>
+                <button id="removeAllBtn" icon="vaadin:angle-double-left"   title="Gỡ tất cả bên phải"/>
+            </vbox>
+
+
+            <!-- Phải: Grid (sửa trực tiếp tplVar) + Form chi tiết -->
+            <!-- Phải: chỉ còn Grid, edit trực tiếp tplVar -->
+            <vbox id="rightPane" width="45%" height="100%" spacing="10px">
+                <span classNames="h5" text="Cột sẽ in"/>
+                <dataGrid id="varsGrid"
+                          dataContainer="selectedDc"
+                          width="100%" height="100%"
+                          editorBuffered="false"
+                          selectionMode="SINGLE"
+                          themeNames="row-stripes">
+                    <columns>
+                        <column property="name"   header="Cột sẽ in"        autoWidth="true"/>
+                        <column property="tplVar" header="Tên biến (Excel)" editable="true" autoWidth="true"/>
+                    </columns>
+                </dataGrid>
             </vbox>
         </hbox>
 
         <!-- JSON state (ẩn) -->
-        <span id="jsonPreview" visible="false"/>
+        <span id="jsonPreview" visible="true"/>
 
         <hbox spacing="8px">
             <button id="saveBtn" text="Lưu" themeNames="success" icon="vaadin:check"/>
             <button id="cancelBtn" text="Hủy" icon="vaadin:close"/>
         </hbox>
-
     </layout>
 </view>

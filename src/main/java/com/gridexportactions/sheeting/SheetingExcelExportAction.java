@@ -2,7 +2,6 @@ package com.gridexportactions.sheeting;
 
 import com.gridexportactions.view.export.OffsetExcelExporter;
 import io.jmix.core.entity.EntityValues;
-import io.jmix.core.metamodel.model.MetaPropertyPath;
 import io.jmix.flowui.action.ActionType;
 import io.jmix.flowui.action.list.ListDataComponentAction;
 import io.jmix.flowui.component.ListDataComponent;
@@ -61,113 +60,215 @@ public class SheetingExcelExportAction extends ListDataComponentAction<SheetingE
 
         try {
             Optional<SheetingConfigService.Spec> cfgOpt = configService.findFor(grid);
-            if (cfgOpt.isPresent()) {
-                var spec = cfgOpt.get();
-
-                // Virtual columns (nếu có)
-                configService.applyVirtualColumns(grid, spec);
-
-                // Order theo config (DB col -> property path)
-                List<String> propertyOrder = configService.resolvePropertyOrder(grid, spec.columns);
-
-                // Nếu có template + (ít nhất một) anchor -> xuất theo POI
-                byte[] template = tryLoadTemplateBytes(spec);
-                boolean hasAnchors = notBlank(spec.dataAnchor) || notBlank(spec.headerAnchor);
-                if (template != null && hasAnchors) {
-                    exportViaTemplatePOI(grid, spec, propertyOrder, template);
-                    return;
-                }
-
-                // Fallback: exporter mặc định
-                OffsetExcelExporter exporter = beanFactory.createBean(OffsetExcelExporter.class);
-                if (!propertyOrder.isEmpty()) {
-                    exporter.withPropertyOrder(propertyOrder);
-                    defaultFilter = configService.buildColumnFilter(grid, propertyOrder, false);
-                }
-                exporter.exportDataGrid(downloader, grid, ExportMode.ALL_ROWS, defaultFilter);
+            if (cfgOpt.isEmpty()) {
+                // Không có cấu hình -> fallback chuẩn
+                fallbackExport(grid, defaultFilter, List.of());
                 return;
             }
 
-            // Không có cấu hình
-            beanFactory.createBean(OffsetExcelExporter.class)
-                    .exportDataGrid(downloader, grid, ExportMode.ALL_ROWS, defaultFilter);
+            var spec = cfgOpt.get();
+            // Thứ tự property path (theo DB columns) để fallback export đúng thứ tự
+            List<String> propertyOrder = configService.resolvePropertyOrder(grid, spec.columns);
 
+            // Thử export bằng template; nếu không nhận thì fallback
+            byte[] template = tryLoadTemplateBytes(spec);
+            boolean ok = tryExportViaTemplatePOI(grid, spec, propertyOrder, template);
+            if (!ok) {
+                fallbackExport(grid, defaultFilter, propertyOrder);
+            }
         } catch (Exception ex) {
-            // Fallback cuối
-            beanFactory.createBean(OffsetExcelExporter.class)
-                    .exportDataGrid(downloader, grid, ExportMode.ALL_ROWS, defaultFilter);
+            // Cứu cháy cuối cùng
+            fallbackExport(grid, defaultFilter, List.of());
         }
     }
 
-    /* ======================== TEMPLATE POI (NO AUTOSIZE) ======================== */
+    /* ======================== TEMPLATE (tplVar & NamedRange) WITH FALLBACK ======================== */
 
-    private void exportViaTemplatePOI(DataGrid<Object> grid,
-                                      SheetingConfigService.Spec spec,
-                                      List<String> propertyOrder,
-                                      byte[] template) throws Exception {
+    /**
+     * Trả true nếu export thành công bằng template. Nếu template null/hỏng/không map được -> trả false để fallback.
+     * Bổ sung: clone nguyên "mẫu" của dòng đầu (style + merges) cho các dòng tiếp theo.
+     */
+    private boolean tryExportViaTemplatePOI(DataGrid<Object> grid,
+                                            SheetingConfigService.Spec spec,
+                                            List<String> propertyOrder,
+                                            byte[] template) {
+        try {
+            if (template == null || template.length == 0) return false; // không có template
 
-        if (propertyOrder == null || propertyOrder.isEmpty()) {
-            propertyOrder = visibleMetaPropertyPaths(grid);
-        }
-        List<Object> items = collectEntities(grid);
+            // Map DB lower -> property path
+            Map<String,String> dbToProperty = configService.buildDbToPropertyPathMap(grid);
+            List<Object> items = collectEntities(grid);
 
-        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(template));
-             ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+            try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(template));
+                 ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
 
-            // Anchor dữ liệu (case-insensitive, cho phép NamedRange là một vùng -> lấy ô đầu)
-            Anchor dataAnchor = resolveAnchor(wb, orElse(spec.dataAnchor, "DATA_START"));
-            if (dataAnchor == null) {
-                throw new IllegalStateException("Không tìm thấy Named Range cho data: " + spec.dataAnchor);
+                // Chọn sheet
+                Sheet sheet = (spec.sheetName != null && !spec.sheetName.isBlank())
+                        ? wb.getSheet(spec.sheetName)
+                        : null;
+                if (sheet == null) sheet = wb.getNumberOfSheets() > 0 ? wb.getSheetAt(0) : wb.createSheet("Export");
+
+                // Resolve anchors nếu có
+                Anchor headerA = resolveAnchor(wb, spec.headerAnchor);
+                Anchor dataA   = resolveAnchor(wb, spec.dataAnchor);
+
+                if (headerA != null && headerA.sheet != null) sheet = headerA.sheet;
+                if (dataA   != null && dataA.sheet   != null) sheet = dataA.sheet;
+
+                int headerRow = headerA != null ? headerA.row : 0;
+                int headerCol0 = headerA != null ? headerA.col : 0;
+
+                // =================== ƯU TIÊN: Named Range theo tplVar ===================
+                Map<String, Anchor> varAnchors = new LinkedHashMap<>();
+                for (String db : spec.columns) {
+                    String var = spec.dbToTplVar.getOrDefault(db.toLowerCase(Locale.ROOT), "");
+                    if (var == null || var.isBlank()) continue;
+                    Anchor a = resolveAnchor(wb, var); // Tên Named Range == tplVar
+                    if (a != null) varAnchors.put(var, a);
+                }
+
+                Map<String,Integer> varToCol = new LinkedHashMap<>();
+                Integer startRowByVars = null;
+                if (!varAnchors.isEmpty()) {
+                    // Nếu các var nằm sheet khác, ưu tiên sheet của var đầu tiên
+                    Anchor first = varAnchors.values().iterator().next();
+                    if (first.sheet != null) sheet = first.sheet;
+
+                    // Hàng bắt đầu là hàng nhỏ nhất trong các anchor (thực tế nên trỏ cùng hàng)
+                    startRowByVars = varAnchors.values().stream().map(a -> a.row).min(Integer::compareTo).orElse(0);
+                    for (Map.Entry<String, Anchor> e : varAnchors.entrySet()) {
+                        varToCol.put(e.getKey(), e.getValue().col);
+                    }
+                }
+
+                // =================== Nếu KHÔNG có Named Range -> dùng header/tuần tự ===================
+                if (varToCol.isEmpty()) {
+                    if (spec.templateHasHeader) {
+                        Row header = getOrCreateRow(sheet, headerRow);
+                        Map<String,Integer> headerTextToIndex = scanHeader(header);
+
+                        int nextCol = headerTextToIndex.values().stream().mapToInt(i->i).max().orElse(headerCol0-1) + 1;
+
+                        for (String db : spec.columns) {
+                            String var = spec.dbToTplVar.getOrDefault(db.toLowerCase(Locale.ROOT), "");
+                            if (var == null || var.isBlank()) continue;
+                            Integer idx = headerTextToIndex.get(var);
+                            if (idx == null) {
+                                // không có cột -> tạo thêm
+                                idx = nextCol++;
+                                Cell cell = getOrCreateCell(header, idx);
+                                cell.setCellValue(var);
+                                applyHeaderStyle(sheet.getWorkbook(), cell);
+                            }
+                            varToCol.put(var, idx);
+                        }
+                    } else {
+                        // Không có header: đổ theo thứ tự columns, bắt đầu từ cột của dataAnchor nếu có, else 0
+                        int col = (dataA != null ? dataA.col : 0);
+                        for (String db : spec.columns) {
+                            String var = spec.dbToTplVar.getOrDefault(db.toLowerCase(Locale.ROOT), "");
+                            if (var == null || var.isBlank()) { col++; continue; }
+                            varToCol.put(var, col++);
+                        }
+                    }
+                }
+
+                // Không map được gì -> coi như template "không nhận", trả false để fallback
+                if (varToCol.isEmpty()) return false;
+
+                // ========== CHUẨN BỊ CLONE DÒNG MẪU ==========
+                // Dòng mẫu = dòng đầu tiên sẽ ghi dữ liệu
+                int startRow = (startRowByVars != null)
+                        ? startRowByVars
+                        : (dataA != null ? dataA.row : (spec.templateHasHeader ? headerRow + 1 : 0));
+
+                // thu thập merge trên dòng mẫu (chỉ những merge 1 hàng)
+                List<CellRangeAddress> templateRowMerges = mergedRegionsOnRow(sheet, startRow);
+
+                // Số cột tối đa trên dòng mẫu để copy style
+                int templateLastCol = Math.max(
+                        Optional.ofNullable(sheet.getRow(startRow)).map(Row::getLastCellNum).orElse((short)0) - 1,
+                        templateRowMerges.stream().mapToInt(CellRangeAddress::getLastColumn).max().orElse(-1)
+                );
+                if (templateLastCol < 0) templateLastCol = 0;
+
+                CellStyle dateStyle = buildDateStyle(wb);
+
+                // ========== GHI DỮ LIỆU ==========
+                int r = startRow;
+                boolean firstRowDone = false;
+                for (Object entity : items) {
+                    if (!firstRowDone) {
+                        // Dòng đầu: dùng sẵn định dạng/merge đang có trong template
+                        firstRowDone = true;
+                    } else {
+                        // Các dòng sau: clone định dạng + merges từ dòng mẫu
+                        cloneRowFormatAndMerges(sheet, startRow, r, templateLastCol, templateRowMerges);
+                    }
+
+                    Row excelRow = getOrCreateRow(sheet, r);
+
+                    // Ghi từng biến
+                    for (String db : spec.columns) {
+                        String var = spec.dbToTplVar.get(db.toLowerCase(Locale.ROOT));
+                        if (var == null || var.isBlank()) continue;
+                        Integer colIdx = varToCol.get(var);
+                        if (colIdx == null) continue;
+
+                        String propPath = dbToProperty.get(db.toLowerCase(Locale.ROOT));
+                        Object val = getByPath(entity, propPath);
+
+                        Cell cell = getOrCreateCell(excelRow, colIdx);
+                        writeValue(cell, val, dateStyle);
+
+                        // Nếu cột này thuộc một merge trên dòng mẫu, đảm bảo set blank cho các ô còn lại của nhóm
+                        CellRangeAddress seg = findMergedRegionStartingAt(templateRowMerges, colIdx);
+                        if (seg != null && seg.getFirstColumn() < seg.getLastColumn()) {
+                            for (int c = seg.getFirstColumn() + 1; c <= seg.getLastColumn(); c++) {
+                                getOrCreateCell(excelRow, c).setBlank();
+                            }
+                        }
+                    }
+
+                    r++;
+                }
+
+                // Autosize những cột thực sự đã ghi
+                for (Integer c : new HashSet<>(varToCol.values())) {
+                    try { sheet.autoSizeColumn(c); } catch (Exception ignore) {}
+                }
+
+                wb.write(bos);
+                downloader.download(bos.toByteArray(),
+                        (spec.sheetName == null || spec.sheetName.isBlank() ? "Export" : spec.sheetName) + ".xlsx",
+                        DownloadFormat.XLSX);
+                return true;
             }
-
-            // Tính toCol: lấy max giữa lastCellNum của hàng và các merge trên chính hàng đó
-            int lastCol = lastColumnIndexOnRow(dataAnchor.sheet, dataAnchor.row);
-            if (lastCol < dataAnchor.col) lastCol = dataAnchor.col;
-
-            // Đọc các SEGMENT trên hàng template, BẮT ĐẦU TỪ CỘT ANCHOR
-            List<Segment> segments = getSegmentsFromTemplateRow(
-                    dataAnchor.sheet, dataAnchor.row, dataAnchor.col, lastCol
-            );
-            if (segments.isEmpty()) {
-                // Không có merge thì dựng segment 1-1 theo số cột cần in
-                segments = new ArrayList<>();
-                int col = dataAnchor.col;
-                for (int i = 0; i < propertyOrder.size(); i++) {
-                    segments.add(new Segment(col, col));
-                    col++;
-                }
-            }
-
-            // Ghi dữ liệu: với MỖI segment, lấy style ngay tại (row anchor, fromCol) rồi apply cho dòng mới
-            int rowIdx = dataAnchor.row; // ghi ngay tại hàng anchor
-            for (Object entity : items) {
-                List<String> values = new ArrayList<>(propertyOrder.size());
-                for (String path : propertyOrder) {
-                    Object v = safeGet(entity, path);
-                    values.add(formatVal(v));
-                }
-
-                int count = Math.min(values.size(), segments.size());
-                for (int i = 0; i < count; i++) {
-                    Segment seg = segments.get(i);
-                    CellStyle segStyle = styleAt(dataAnchor.sheet, dataAnchor.row, seg.from);
-                    writeIntoSegment(dataAnchor.sheet, rowIdx, seg.from, seg.to, values.get(i), segStyle);
-                }
-                // Nếu còn segment dư thì fill rỗng
-                for (int i = count; i < segments.size(); i++) {
-                    Segment seg = segments.get(i);
-                    CellStyle segStyle = styleAt(dataAnchor.sheet, dataAnchor.row, seg.from);
-                    writeIntoSegment(dataAnchor.sheet, rowIdx, seg.from, seg.to, "", segStyle);
-                }
-                rowIdx++;
-            }
-
-            wb.write(bos);
-            downloader.download(bos.toByteArray(), buildOutName(spec), DownloadFormat.XLSX);
+        } catch (Exception e) {
+            // bất cứ lỗi gì với template => trả false để fallback
+            return false;
         }
     }
 
-    /* ------------------ Helpers: read grid, values, formatting ------------------ */
+    /* ------------------ Fallback: xuất như Grid Export mặc định ------------------ */
+    private void fallbackExport(DataGrid<Object> grid,
+                                Predicate<DataGrid.Column<Object>> defaultFilter,
+                                List<String> propertyOrder) {
+        OffsetExcelExporter exporter = beanFactory.createBean(OffsetExcelExporter.class);
+        Predicate<DataGrid.Column<Object>> filter = defaultFilter;
+
+        if (propertyOrder != null && !propertyOrder.isEmpty()) {
+            exporter.withPropertyOrder(propertyOrder);
+            filter = c -> {
+                var edg = (EnhancedDataGrid) grid;
+                var mpp = edg.getColumnMetaPropertyPath(c);
+                return mpp != null && propertyOrder.contains(mpp.toPathString());
+            };
+        }
+        exporter.exportDataGrid(downloader, grid, ExportMode.ALL_ROWS, filter);
+    }
+
+    /* ------------------ Helpers: grid & values ------------------ */
 
     private static List<Object> collectEntities(DataGrid<Object> grid) {
         if (grid instanceof ListDataComponent) {
@@ -180,189 +281,162 @@ public class SheetingExcelExportAction extends ListDataComponentAction<SheetingE
         return List.of();
     }
 
-    private static List<String> visibleMetaPropertyPaths(DataGrid<Object> grid) {
-        @SuppressWarnings("unchecked")
-        EnhancedDataGrid<Object> edg = (EnhancedDataGrid<Object>) grid;
-        return grid.getAllColumns().stream()
-                .filter(DataGrid.Column::isVisible)
-                .map(col -> edg.getColumnMetaPropertyPath(col))   // MetaPropertyPath
-                .filter(Objects::nonNull)
-                .map(MetaPropertyPath::toPathString)
-                .collect(Collectors.toList());
+    private static Object getByPath(Object entity, String path) {
+        if (entity == null || path == null || path.isBlank()) return null;
+        try { return EntityValues.getValue(entity, path); }
+        catch (Exception ignore) { return null; }
     }
 
-    private static Object safeGet(Object entity, String path) {
+    /* ------------------ Helpers: Template + Header + Clone Row ------------------ */
+
+    private static class Anchor { final Sheet sheet; final int row; final int col; Anchor(Sheet s,int r,int c){sheet=s;row=r;col=c;} }
+
+    private static Anchor resolveAnchor(Workbook wb, String name) {
+        if (name == null || name.isBlank()) return null;
         try {
-            return EntityValues.getValue(entity, path);
-        } catch (Exception ignore) {
+            Name nm = wb.getName(name);
+            if (nm == null) {
+                for (Name n : wb.getAllNames())
+                    if (name.equalsIgnoreCase(n.getNameName())) { nm = n; break; }
+            }
+            if (nm == null || nm.getRefersToFormula() == null) return null;
+            AreaReference ar = new AreaReference(nm.getRefersToFormula(), wb.getSpreadsheetVersion());
+            CellReference first = ar.getFirstCell();
+            Sheet sheet = first.getSheetName() != null ? wb.getSheet(first.getSheetName())
+                    : (nm.getSheetIndex() >= 0 ? wb.getSheetAt(nm.getSheetIndex()) : wb.getSheetAt(0));
+            return new Anchor(sheet, first.getRow(), first.getCol());
+        } catch (UnsupportedOperationException | IllegalArgumentException e) {
             return null;
         }
     }
 
-    private static String formatVal(Object v) {
-        if (v == null) return "";
-        if (v instanceof java.time.LocalDate d) return d.toString();
-        if (v instanceof java.time.LocalDateTime dt) return dt.toString();
-        if (v instanceof java.time.OffsetDateTime odt) return odt.toString();
-        if (v instanceof Number n) return n.toString();
-        return String.valueOf(v);
-    }
-
-    /* ------------------ Helpers: Template + Named Range + Merge ------------------ */
-
-    private static class Anchor {
-        final Sheet sheet; final int row; final int col;
-        Anchor(Sheet s, int r, int c) { sheet = s; row = r; col = c; }
-    }
-
-    /** Tìm NamedRange theo tên (case-insensitive). Nếu NamedRange là một vùng, lấy ô đầu (top-left). */
-    private static Anchor resolveAnchor(Workbook wb, String named) {
-        if (named == null || named.isBlank()) return null;
-
-        Name found = null;
-        try { found = wb.getName(named); } catch (UnsupportedOperationException ignore) {}
-        if (found == null) {
-            // Tìm case-insensitive
-            try {
-                for (Name n : wb.getAllNames()) {
-                    if (named.equalsIgnoreCase(n.getNameName())) { found = n; break; }
-                }
-            } catch (UnsupportedOperationException ignore) {}
+    private static Map<String,Integer> scanHeader(Row header) {
+        Map<String,Integer> map = new HashMap<>();
+        if (header == null) return map;
+        short last = header.getLastCellNum();
+        if (last < 0) last = 0;
+        for (int i = 0; i < last + 256; i++) {
+            Cell c = header.getCell(i, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL);
+            if (c == null) continue;
+            String txt = getString(c).trim();
+            if (!txt.isEmpty()) map.put(txt, i);
         }
-        if (found == null || found.getRefersToFormula() == null) return null;
-
-        AreaReference ar = new AreaReference(found.getRefersToFormula(), wb.getSpreadsheetVersion());
-        CellReference first = ar.getFirstCell();
-
-        Sheet sheet = first.getSheetName() != null
-                ? wb.getSheet(first.getSheetName())
-                : (found.getSheetIndex() >= 0 ? wb.getSheetAt(found.getSheetIndex()) : wb.getSheetAt(0));
-
-        return new Anchor(sheet, first.getRow(), first.getCol());
+        return map;
     }
 
-    private static class Segment { final int from, to; Segment(int f, int t){from=f;to=t;} }
-
-    /** Trả về danh sách segment theo merge trên hàng `row`, quét từ `fromCol` → `toCol`. */
-    private static List<Segment> getSegmentsFromTemplateRow(Sheet sh, int row, int fromCol, int toCol) {
-        List<Segment> segs = new ArrayList<>();
-        if (toCol < fromCol) return segs;
-
-        int c = fromCol;
-        while (c <= toCol) {
-            CellRangeAddress rStart = findMergedRegionStartingAt(sh, row, c);
-            if (rStart != null) {
-                segs.add(new Segment(c, rStart.getLastColumn()));
-                c = rStart.getLastColumn() + 1;
-                continue;
-            }
-            CellRangeAddress rAny = findMergedRegionContaining(sh, row, c);
-            if (rAny != null) {
-                c = rAny.getLastColumn() + 1;
-                continue;
-            }
-            segs.add(new Segment(c, c));
-            c++;
-        }
-        return segs;
+    private static Row getOrCreateRow(Sheet s, int row) {
+        Row r = s.getRow(row);
+        return r != null ? r : s.createRow(row);
+    }
+    private static Cell getOrCreateCell(Row r, int col) {
+        Cell c = r.getCell(col);
+        return c != null ? c : r.createCell(col);
     }
 
-    private static int lastColumnIndexOnRow(Sheet sh, int row) {
-        int last = -1;
-        Row r = sh.getRow(row);
-        if (r != null) last = Math.max(last, r.getLastCellNum() - 1);
-        for (CellRangeAddress m : sh.getMergedRegions()) {
-            if (m.getFirstRow() <= row && row <= m.getLastRow()) {
-                last = Math.max(last, m.getLastColumn());
-            }
-        }
-        return Math.max(last, 0);
+    private static void applyHeaderStyle(Workbook wb, Cell cell) {
+        Font bold = wb.createFont(); bold.setBold(true);
+        CellStyle st = wb.createCellStyle(); st.setFont(bold);
+        cell.setCellStyle(st);
     }
 
-    private static CellRangeAddress findMergedRegionStartingAt(Sheet sh, int row, int col) {
+    private static String getString(Cell c) {
+        if (c == null) return "";
+        return switch (c.getCellType()) {
+            case STRING -> c.getStringCellValue();
+            case NUMERIC -> String.valueOf(c.getNumericCellValue());
+            case BOOLEAN -> String.valueOf(c.getBooleanCellValue());
+            default -> "";
+        };
+    }
+
+    private static void writeValue(Cell cell, Object val, CellStyle dateStyle) {
+        if (val == null) { cell.setBlank(); return; }
+        if (val instanceof Number n) { cell.setCellValue(n.doubleValue()); return; }
+        if (val instanceof java.util.Date d) { cell.setCellValue(d); cell.setCellStyle(dateStyle); return; }
+        if (val instanceof java.sql.Date d) { cell.setCellValue(new java.util.Date(d.getTime())); cell.setCellStyle(dateStyle); return; }
+        if (val instanceof java.sql.Timestamp ts) { cell.setCellValue(new java.util.Date(ts.getTime())); cell.setCellStyle(dateStyle); return; }
+        if (val instanceof Boolean b) { cell.setCellValue(b); return; }
+        cell.setCellValue(String.valueOf(val));
+    }
+
+    private static CellStyle buildDateStyle(Workbook wb) {
+        CreationHelper helper = wb.getCreationHelper();
+        CellStyle style = wb.createCellStyle();
+        style.setDataFormat(helper.createDataFormat().getFormat("yyyy-mm-dd"));
+        return style;
+    }
+
+    /* ---------- Clone row: copy style + merges (không copy giá trị text/số) ---------- */
+
+    /** Lấy các merged region 1 hàng nằm trên đúng row. */
+    private static List<CellRangeAddress> mergedRegionsOnRow(Sheet sh, int row) {
+        List<CellRangeAddress> out = new ArrayList<>();
         for (CellRangeAddress r : sh.getMergedRegions()) {
-            if (r.getFirstRow() == row && r.getFirstColumn() == col) return r;
+            if (r.getFirstRow() == row && r.getLastRow() == row) out.add(r);
+        }
+        return out;
+    }
+
+    private static CellRangeAddress findMergedRegionStartingAt(List<CellRangeAddress> list, int col) {
+        for (CellRangeAddress r : list) {
+            if (r.getFirstColumn() == col) return r;
         }
         return null;
     }
 
-    private static CellRangeAddress findMergedRegionContaining(Sheet sh, int row, int col) {
-        for (CellRangeAddress r : sh.getMergedRegions()) {
-            if (r.isInRange(row, col)) return r;
+    /** Clone định dạng + merges từ templateRow -> targetRow. Không copy giá trị. */
+    private static void cloneRowFormatAndMerges(Sheet sheet,
+                                                int templateRow,
+                                                int targetRow,
+                                                int templateLastCol,
+                                                List<CellRangeAddress> templateMerges) {
+        // 1) Copy row height
+        Row src = sheet.getRow(templateRow);
+        Row dst = getOrCreateRow(sheet, targetRow);
+        if (src != null) dst.setHeight(src.getHeight());
+
+        // 2) Copy cell styles
+        for (int c = 0; c <= templateLastCol; c++) {
+            Cell srcCell = (src == null) ? null : src.getCell(c);
+            Cell dstCell = getOrCreateCell(dst, c);
+            if (srcCell != null) {
+                CellStyle st = srcCell.getCellStyle();
+                if (st != null) dstCell.setCellStyle(st);
+            } else {
+                // nếu template không có cell, để trống
+                dstCell.setBlank();
+            }
         }
-        return null;
+
+        // 3) Recreate merged regions for this row (avoid duplicates)
+        for (CellRangeAddress r : templateMerges) {
+            CellRangeAddress copy = new CellRangeAddress(targetRow, targetRow, r.getFirstColumn(), r.getLastColumn());
+            if (!hasExactMergedRegion(sheet, copy)) {
+                sheet.addMergedRegion(copy);
+            }
+        }
     }
 
-    private static void writeIntoSegment(Sheet sh, int rowIdx, int from, int to, String val, CellStyle style) {
-        Row row = getOrCreateRow(sh, rowIdx);
-        for (int c = from; c <= to; c++) {
-            Cell cell = getOrCreateCell(row, c);
-            if (c == from) cell.setCellValue(val == null ? "" : val);
-            else cell.setBlank();
-            if (style != null) cell.setCellStyle(style);
-        }
-        if (to > from && !hasExactMergedRegion(sh, rowIdx, from, to)) {
-            sh.addMergedRegion(new CellRangeAddress(rowIdx, rowIdx, from, to));
-        }
-    }
-
-    private static boolean hasExactMergedRegion(Sheet sh, int row, int from, int to) {
+    private static boolean hasExactMergedRegion(Sheet sh, CellRangeAddress region) {
         for (CellRangeAddress r : sh.getMergedRegions()) {
-            if (r.getFirstRow() == row && r.getLastRow() == row
-                    && r.getFirstColumn() == from && r.getLastColumn() == to) return true;
+            if (r.getFirstRow() == region.getFirstRow()
+                    && r.getLastRow() == region.getLastRow()
+                    && r.getFirstColumn() == region.getFirstColumn()
+                    && r.getLastColumn() == region.getLastColumn()) return true;
         }
         return false;
     }
 
-    private static Row getOrCreateRow(Sheet sheet, int rowIdx) {
-        Row row = sheet.getRow(rowIdx);
-        return row != null ? row : sheet.createRow(rowIdx);
-    }
-
-    private static Cell getOrCreateCell(Row row, int colIndex) {
-        Cell cell = row.getCell(colIndex);
-        return cell != null ? cell : row.createCell(colIndex);
-    }
-
-    private static CellStyle styleAt(Sheet sh, int row, int col) {
-        Row r = sh.getRow(row);
-        if (r == null) return null;
-        Cell c = r.getCell(col);
-        return c != null ? c.getCellStyle() : null;
-    }
-
-    /* ------------------ Template + tên file xuất ------------------ */
+    /* ------------------ Template bytes ------------------ */
 
     private byte[] tryLoadTemplateBytes(SheetingConfigService.Spec spec) {
         try {
-            String fileName = firstNonBlank(spec.templateUploaded, defaultFileName(spec.table));
-            if (fileName == null) return null;
-            Path p = Paths.get(templatesDir, fileName);
+            if (spec.templateUploaded == null || spec.templateUploaded.isBlank()) return null;
+            Path p = Paths.get(templatesDir, spec.templateUploaded);
             if (!Files.exists(p)) return null;
             return Files.readAllBytes(p);
         } catch (Exception ignore) {
             return null;
         }
     }
-
-    private static String buildOutName(SheetingConfigService.Spec spec) {
-        String base = (spec.sheetName != null && !spec.sheetName.isBlank())
-                ? spec.sheetName : "Export";
-        return normalize(base) + ".xlsx";
-    }
-
-    private static String defaultFileName(String table) {
-        return normalize(table) + "-template.xlsx";
-    }
-
-    private static String firstNonBlank(String... opts) {
-        for (String s : opts) if (notBlank(s)) return s;
-        return null;
-    }
-    private static String orElse(String s, String def) { return (s == null || s.isBlank()) ? def : s; }
-    private static String normalize(String s) {
-        if (s == null) return "export";
-        return s.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9._-]", "_");
-    }
-    private static boolean notBlank(String s){ return s != null && !s.isBlank(); }
 }
